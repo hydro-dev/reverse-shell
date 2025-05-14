@@ -1,0 +1,20 @@
+{
+  "name": "@hydrooj/reverse-shell",
+  "version": "1.0.0",
+  "main": "server.ts",
+  "bin": {
+    "reverse-shell-server": "load.js"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "node -r @hydrooj/register server.ts"
+  },
+  "dependencies": {
+    "@hydrooj/register": "^1.0.3",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "@types/ssh2": "^1.15.5"
+  }
+}
