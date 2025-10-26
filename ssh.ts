@@ -7,18 +7,19 @@ import { activeConnections, activeSSHConnections, SSHConnection } from './state'
 
 const SSH_PORT = 13336;
 
-const keyPath = path.join(__dirname, 'ssh_keys');
-if (!fs.existsSync(keyPath)) fs.mkdirSync(keyPath);
+const dotssh = path.join(homedir(), '.ssh');
+if (!fs.existsSync(dotssh)) fs.mkdirSync(dotssh);
 
-const privateKeyPath = path.join(keyPath, 'id_rsa');
-const publicKeyPath = path.join(keyPath, 'id_rsa.pub');
+const privateKeyPath = path.join(dotssh, 'id_rsa');
+const publicKeyPath = path.join(dotssh, 'id_rsa.pub');
+const authorizedKeysPath = path.join(dotssh, 'authorized_keys');
 
 if (!fs.existsSync(privateKeyPath)) {
     const { execSync } = require('child_process');
     execSync(`ssh-keygen -t rsa -b 4096 -f ${privateKeyPath} -N ""`);
 }
 
-const authorizedKeys = fs.readFileSync(path.join(homedir(), '.ssh', 'authorized_keys'), 'utf-8').split('\n').filter(i => i.trim());
+const authorizedKeys = fs.existsSync(authorizedKeysPath) ? fs.readFileSync(authorizedKeysPath, 'utf-8').split('\n').filter(i => i.trim()) : [];
 const allowedPubKeys = authorizedKeys.map(i => utils.parseKey(i + '\n')).filter(i => i && !(i instanceof Error)) as ParsedKey[];
 console.log(allowedPubKeys.length + ' keys loaded');
 
@@ -26,9 +27,6 @@ const eq = (a: Buffer, b: Buffer) => {
     if (a.length !== b.length) return false;
     return timingSafeEqual(a, b);
 }
-
-
-
 
 const sshServer = new Server({
     hostKeys: [fs.readFileSync(privateKeyPath)],
