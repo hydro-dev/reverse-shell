@@ -76,9 +76,8 @@ const sshServer = new Server({
                 if (state.selectedId) {
                     const connInfo = activeConnections.get(state.selectedId);
                     if (connInfo && state.rows && state.cols) {
-                        connInfo.terminal.resize(state.cols, state.rows - 1);
+                        connInfo.resize(state.rows - 1, state.cols);
                     }
-                    activeConnections.get(state.selectedId)?.socket.write(`\x1b[8;${info.rows - 1};${info.cols}t`);
                     state.stream?.write(`\x1b[1;${info.rows - 1}r`);
                 } else {
                     state.stream?.write('\x1b[r');
@@ -141,7 +140,7 @@ const sshServer = new Server({
                                         stream.write(serialized);
                                         // Restore cursor position after everything
                                         stream.write(`\x1b[${cursorY};${cursorX}H`);
-                                        info.socket.write(`\x1b[8;${state.rows - 1};${state.cols}t`);
+                                        info.resize(state.rows - 1, state.cols);
                                     }
                                     state.drawBottomBar();
                                 } else {
@@ -176,6 +175,11 @@ const sshServer = new Server({
         activeSSHConnections.delete(client);
         console.log(`[-] Admin connection closed from ${clientInfo}`);
     });
+
+    client.on('error', (err) => {
+        activeSSHConnections.delete(client);
+        console.error(`[-] Admin connection error: ${err.message}`);
+    })
 });
 
 // 启动SSH服务器

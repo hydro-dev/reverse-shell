@@ -4,8 +4,6 @@ import * as net from 'net';
 import fs from 'fs';
 import path from 'path';
 import { activeConnections, activeSSHConnections, ConnectionInfo } from './state';
-import { Terminal } from '@xterm/headless';
-import { SerializeAddon } from '@xterm/addon-serialize';
 
 const PORT = 13335;
 
@@ -15,8 +13,7 @@ const script = fs.readFileSync(path.join(__dirname, 'client.py'), 'utf-8');
 reverseShellServer.on('connection', (socket) => {
     const connectionId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`[+] New reverse shell connection from ${connectionId}`);
-    const info: ConnectionInfo = { socket, user: '', os: '', terminal: new Terminal({ rows: 24, cols: 80, allowProposedApi: true }), serializeAddon: new SerializeAddon() };
-    info.terminal.loadAddon(info.serializeAddon);
+    const info = new ConnectionInfo(socket, '', '');
     activeConnections.set(connectionId, info);
 
     // 发送创建PTY的命令，设置初始终端大小
@@ -27,6 +24,13 @@ reverseShellServer.on('connection', (socket) => {
 
     let isInfo = false;
     let buffer = '';
+
+    const interval = setInterval(() => {
+        try {
+            info.resize(info.rows, info.cols);
+        } catch (e) { }
+    }, 30000);
+
     const infoCallback = (data) => {
         const str = data.toString();
         if (str.includes('---END_INFO2---') && isInfo) {
@@ -86,11 +90,13 @@ reverseShellServer.on('connection', (socket) => {
                 sshState.drawBottomBar();
             }
         });
+        clearInterval(interval);
     });
 
     info.socket.on('error', (err) => {
         console.error(`[!] Socket error: ${err.message}`);
         activeConnections.delete(connectionId);
+        clearInterval(interval);
     });
 });
 

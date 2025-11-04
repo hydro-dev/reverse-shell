@@ -64,12 +64,30 @@ export class SSHConnection {
     }
 }
 
-export interface ConnectionInfo {
+export class ConnectionInfo {
     socket: Socket;
     user: string;
     os: string;
     terminal: Terminal;
     serializeAddon: SerializeAddon;
+    rows = 24;
+    cols = 80;
+
+    constructor(socket: Socket, user: string, os: string) {
+        this.socket = socket;
+        this.user = user;
+        this.os = os;
+        this.terminal = new Terminal({ rows: 24, cols: 80, allowProposedApi: true });
+        this.serializeAddon = new SerializeAddon();
+        this.terminal.loadAddon(this.serializeAddon);
+    }
+
+    resize(rows: number, cols: number) {
+        this.terminal.resize(cols, rows);
+        this.rows = rows;
+        this.cols = cols;
+        this.socket.write(`\x1b[8;${rows};${cols}t`);
+    }
 }
 
 export const activeConnections = new Map<string, ConnectionInfo>();
