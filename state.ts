@@ -1,5 +1,7 @@
 import { Socket } from 'net';
 import { Connection } from 'ssh2';
+import { Terminal } from '@xterm/headless';
+import { SerializeAddon } from '@xterm/addon-serialize';
 
 
 const visibleLength = (str: string): number => {
@@ -46,12 +48,14 @@ export class SSHConnection {
 
         // Calculate visible padding to right-align status: total visible space between tabs and status
         const paddingVisLength = this.cols - tabVisLength - statusVisLength;
-        const padding = ' '.repeat(paddingVisLength);
+        const padding = ' '.repeat(Math.max(0, paddingVisLength));
 
-        // Full line: set blue bg, write tabs, padding, status, reset
-        const fullLine = '\x1b[44;37m' + tabContent + padding + status + '\x1b[0m';
+        // Full line: set color bg based on commandMode, write tabs, padding, status, reset
+        // 44 = blue bg, 42 = green bg (for command mode)
+        const bgColor = this.commandMode ? '42' : '44';
+        const fullLine = `\x1b[${bgColor};37m` + tabContent + padding + status + '\x1b[0m';
 
-        // Since padding is visible spaces, and all in blue, it should fill
+        // Since padding is visible spaces, and all in the same background color, it should fill
         this.stream.write('\x1b[s');
         this.stream.write(`\x1b[${this.rows};0H`);
         this.stream.write('\x1b[2K');
@@ -64,6 +68,8 @@ export interface ConnectionInfo {
     socket: Socket;
     user: string;
     os: string;
+    terminal: Terminal;
+    serializeAddon: SerializeAddon;
 }
 
 export const activeConnections = new Map<string, ConnectionInfo>();

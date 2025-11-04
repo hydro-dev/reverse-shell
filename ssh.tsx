@@ -74,6 +74,10 @@ const sshServer = new Server({
                 state.rows = info.rows;
                 state.cols = info.cols;
                 if (state.selectedId) {
+                    const connInfo = activeConnections.get(state.selectedId);
+                    if (connInfo && state.rows && state.cols) {
+                        connInfo.terminal.resize(state.cols, state.rows - 1);
+                    }
                     activeConnections.get(state.selectedId)?.socket.write(`\x1b[8;${info.rows - 1};${info.cols}t`);
                     state.stream?.write(`\x1b[1;${info.rows - 1}r`);
                 } else {
@@ -91,33 +95,6 @@ const sshServer = new Server({
                 }
                 console.log('[*] Admin shell session started');
 
-                // 切换到命令模式
-                const switchToCommandMode = () => {
-                    if (!state.selectedId) return;
-                    state.selectedId = null;
-                    state.commandMode = true;
-                    stream.write('\r\nCommand mode - Press number to switch tab, l to list, q to quit\r\n');
-                    stream.write('\x1b[r'); // Reset scroll region to full screen
-                    state.drawBottomBar();
-                };
-
-                // 通过数字选择连接
-                const selectConnectionByNumber = (num: number) => {
-                    const connections = Array.from(activeConnections.entries());
-                    if (num > 0 && num <= connections.length) {
-                        const [id, info] = connections[num - 1];
-                        state.selectedId = id;
-                        stream.write(`\r\nSelected connection: ${info.user || 'unknown'}@${info.os || 'unknown'} (${id})\r\n`);
-                        if (state.rows && state.cols) {
-                            info.socket.write(`\x1b[8;${state.rows - 1};${state.cols}t`);
-                            stream.write(`\x1b[1;${state.rows - 1}r`); // Set scroll region to protect bottom line
-                        }
-                        state.drawBottomBar();
-                    } else {
-                        stream.write('\r\nInvalid connection number\r\n');
-                    }
-                };
-
                 // 清屏并设置初始状态
                 stream.write('\x1b[2J\x1b[H');
                 stream.write('Command mode - Press number to switch tab, l to list, q to quit\r\n');
@@ -127,28 +104,50 @@ const sshServer = new Server({
                 stream.on('data', (data) => {
                     const input = data.toString();
                     if (data[0] === 2) { // Ctrl+B
-                        if (!state.commandMode) {
-                            switchToCommandMode();
-                            return;
-                        } else {
+                        if (!state.commandMode) state.commandMode = true;
+                        else if (state.selectedId) {
                             state.commandMode = false;
-                            if (state.selectedId && state.rows) {
-                                stream.write(`\x1b[1;${state.rows - 1}r`);
-                            }
-                            state.drawBottomBar();
-                            return;
+                            activeConnections.get(state.selectedId)?.socket.write(data);
                         }
+                        state.drawBottomBar();
+                        return;
                     }
-                    if (state.selectedId) {
-                        activeConnections.get(state.selectedId)?.socket.write(data);
-                    } else {
+                    if (state.commandMode) {
                         const char = input[0];
-                        if (char === 'q' || char === 'd') {
-                            stream.end();
-                        } else {
+                        if (char === 'q' || char === 'd') stream.end();
+                        else {
                             const num = parseInt(char);
-                            if (!isNaN(num)) selectConnectionByNumber(num);
-                            else if (char === 'l') {
+                            if (!isNaN(num)) {
+                                const connections = Array.from(activeConnections.entries());
+                                if (num > 0 && num <= connections.length) {
+                                    const [id, info] = connections[num - 1];
+                                    state.selectedId = id;
+                                    state.commandMode = false;
+                                    if (state.rows && state.cols) {
+                                        info.terminal.resize(state.cols, state.rows - 1);
+                                        // Get cursor position before clearing
+                                        const buffer = info.terminal.buffer.active;
+                                        const cursorY = buffer.cursorY + 1; // 1-based
+                                        const cursorX = buffer.cursorX + 1; // 1-based
+                                        console.log('[-] Cursor position', cursorY, cursorX);
+                                        // Clear screen and set scroll region first
+                                        stream.write('\x1b[2J'); // Clear screen
+                                        stream.write(`\x1b[1;${state.rows - 1}r`); // Set scroll region to protect bottom line
+                                        stream.write('\x1b[H'); // Move cursor to home
+                                        // Write serialized content (remove cursor position from it if present)
+                                        const serialized = info.serializeAddon.serialize();
+                                        // Remove cursor position ANSI codes from serialized content
+                                        // const cleanedSerialized = serialized.replace(/\x1b\[\d+;\d+[Hf]/g, '');
+                                        stream.write(serialized);
+                                        // Restore cursor position after everything
+                                        stream.write(`\x1b[${cursorY};${cursorX}H`);
+                                        info.socket.write(`\x1b[8;${state.rows - 1};${state.cols}t`);
+                                    }
+                                    state.drawBottomBar();
+                                } else {
+                                    stream.write('\r\nInvalid connection number\r\n');
+                                }
+                            } else if (char === 'l') {
                                 stream.write('\r\nActive connections:\r\n');
                                 const conns = Array.from(activeConnections.entries());
                                 conns.forEach(([id, info], idx) => {
@@ -158,6 +157,8 @@ const sshServer = new Server({
                                 stream.write('\r\n');
                             }
                         }
+                    } else if (state.selectedId) {
+                        activeConnections.get(state.selectedId)?.socket.write(data);
                     }
                 });
 
