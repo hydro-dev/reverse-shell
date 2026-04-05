@@ -87,6 +87,23 @@ export function requestTargetTunnel(connectionId: string, remotePort: number) {
     connInfo.socket.write(`\x1b[9;${remotePort};${TUNNEL_SERVER_PORT};${serverIp};${connectionId}t`);
 }
 
+export function findAvailablePort(start: number): Promise<number> {
+    const port = start > 65535 ? 40000 : start;
+    return new Promise((resolve, reject) => {
+        const probe = net.createServer();
+        probe.listen(port, '127.0.0.1', () => {
+            probe.close(() => resolve(port));
+        });
+        probe.on('error', (err: NodeJS.ErrnoException) => {
+            if (err.code === 'EADDRINUSE' && port < 65534) {
+                resolve(findAvailablePort(port + 1));
+            } else {
+                reject(new Error(`No available port starting from ${start}`));
+            }
+        });
+    });
+}
+
 export function registerTunnel(
     connectionId: string,
     remotePort: number,

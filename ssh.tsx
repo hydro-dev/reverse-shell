@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { activeConnections, activeSSHConnections, SSHConnection } from './state';
-import { activeTunnels, registerTunnel, unregisterTunnel } from './tunnel';
+import { activeTunnels, findAvailablePort, registerTunnel, unregisterTunnel } from './tunnel';
 
 const SSH_PORT = 13336;
 
@@ -110,20 +110,41 @@ const sshServer = new Server({
                                 break;
                             }
                             const remotePort = parseInt(parts[1]);
-                            if (isNaN(remotePort)) {
+                            if (isNaN(remotePort) || remotePort < 1 || remotePort > 65535) {
                                 stream.write('Usage: fwd <remotePort> [localPort]\r\n');
                                 break;
                             }
-                            const localPort = parseInt(parts[2]) || 10000 + remotePort;
-                            registerTunnel(state.selectedId, remotePort, localPort)
-                                .then(() => {
-                                    stream.write(`[+] Tunnel: 127.0.0.1:${localPort} -> target:${remotePort}\r\n`);
-                                    state.drawBottomBar();
-                                })
-                                .catch((e: Error) => {
-                                    stream.write(`[-] Failed: ${e.message}\r\n`);
-                                    state.drawBottomBar();
-                                });
+                            const rawLocal = parseInt(parts[2]);
+                            const isManual = !isNaN(rawLocal);
+                            const connId = state.selectedId;
+                            if (isManual) {
+                                if (rawLocal < 1 || rawLocal > 65535) {
+                                    stream.write('Error: local port must be between 1 and 65535\r\n');
+                                    break;
+                                }
+                                registerTunnel(connId, remotePort, rawLocal)
+                                    .then(() => {
+                                        stream.write(`[+] Tunnel: 127.0.0.1:${rawLocal} -> target:${remotePort}\r\n`);
+                                        state.drawBottomBar();
+                                    })
+                                    .catch((e: Error) => {
+                                        stream.write(`[-] Failed: ${e.message}\r\n`);
+                                        state.drawBottomBar();
+                                    });
+                            } else {
+                                findAvailablePort(10000 + remotePort)
+                                    .then((localPort) =>
+                                        registerTunnel(connId, remotePort, localPort).then(() => localPort),
+                                    )
+                                    .then((localPort) => {
+                                        stream.write(`[+] Tunnel: 127.0.0.1:${localPort} -> target:${remotePort}\r\n`);
+                                        state.drawBottomBar();
+                                    })
+                                    .catch((e: Error) => {
+                                        stream.write(`[-] Failed: ${e.message}\r\n`);
+                                        state.drawBottomBar();
+                                    });
+                            }
                             break;
                         }
                         case 'unfwd': {
