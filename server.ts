@@ -1,4 +1,5 @@
 import './ssh';
+import './tunnel';
 
 import * as net from 'net';
 import fs from 'fs';

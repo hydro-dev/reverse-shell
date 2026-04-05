@@ -11,6 +11,8 @@ const visibleLength = (str: string): number => {
 export class SSHConnection {
     selectedId: string | null = null;
     commandMode: boolean = true;
+    commandInputMode: boolean = false;
+    commandInputBuffer: string = '';
     rows?: number;
     cols?: number;
     constructor(public stream: any) { }

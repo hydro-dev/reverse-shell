@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { activeConnections, activeSSHConnections, SSHConnection } from './state';
+import { activeTunnels, registerTunnel, unregisterTunnel } from './tunnel';
 
 const SSH_PORT = 13336;
 
@@ -100,7 +101,62 @@ const sshServer = new Server({
                 stream.write('\x1b[r'); // Initial full scroll region for command mode
                 state.drawBottomBar();
 
-                stream.on('data', (data) => {
+                const executeAdminCommand = (cmd: string) => {
+                    const parts = cmd.trim().split(/\s+/);
+                    switch (parts[0]) {
+                        case 'fwd': {
+                            if (!state.selectedId) {
+                                stream.write('Error: no connection selected\r\n');
+                                break;
+                            }
+                            const remotePort = parseInt(parts[1]);
+                            if (isNaN(remotePort)) {
+                                stream.write('Usage: fwd <remotePort> [localPort]\r\n');
+                                break;
+                            }
+                            const localPort = parseInt(parts[2]) || 10000 + remotePort;
+                            registerTunnel(state.selectedId, remotePort, localPort)
+                                .then(() => {
+                                    stream.write(`[+] Tunnel: 127.0.0.1:${localPort} -> target:${remotePort}\r\n`);
+                                    state.drawBottomBar();
+                                })
+                                .catch((e: Error) => {
+                                    stream.write(`[-] Failed: ${e.message}\r\n`);
+                                    state.drawBottomBar();
+                                });
+                            break;
+                        }
+                        case 'unfwd': {
+                            if (!state.selectedId) {
+                                stream.write('Error: no connection selected\r\n');
+                                break;
+                            }
+                            const remotePort = parseInt(parts[1]);
+                            if (isNaN(remotePort)) {
+                                stream.write('Usage: unfwd <remotePort>\r\n');
+                                break;
+                            }
+                            unregisterTunnel(state.selectedId, remotePort);
+                            stream.write(`[-] Tunnel removed: target:${remotePort}\r\n`);
+                            break;
+                        }
+                        case 'tunnels': {
+                            if (activeTunnels.size === 0) {
+                                stream.write('No active tunnels\r\n');
+                            } else {
+                                activeTunnels.forEach((t) => {
+                                    stream.write(`  ${t.connectionId}:${t.remotePort} -> 127.0.0.1:${t.localPort}\r\n`);
+                                });
+                            }
+                            break;
+                        }
+                        default:
+                            if (parts[0]) stream.write(`Unknown command: ${parts[0]}\r\n`);
+                    }
+                    state.drawBottomBar();
+                };
+
+                stream.on('data', (data: Buffer) => {
                     const input = data.toString();
                     if (data[0] === 2) { // Ctrl+B
                         if (!state.commandMode) state.commandMode = true;
@@ -111,10 +167,39 @@ const sshServer = new Server({
                         state.drawBottomBar();
                         return;
                     }
+                    if (state.commandInputMode) {
+                        for (const char of input) {
+                            if (char === '\r' || char === '\n') {
+                                const cmd = state.commandInputBuffer;
+                                state.commandInputMode = false;
+                                state.commandInputBuffer = '';
+                                stream.write('\r\n');
+                                executeAdminCommand(cmd);
+                            } else if (char === '\x7f' || char === '\x08') {
+                                if (state.commandInputBuffer.length > 0) {
+                                    state.commandInputBuffer = state.commandInputBuffer.slice(0, -1);
+                                    stream.write('\x08 \x08');
+                                }
+                            } else if (char === '\x1b') {
+                                state.commandInputMode = false;
+                                state.commandInputBuffer = '';
+                                stream.write('\r\n');
+                                state.drawBottomBar();
+                            } else {
+                                state.commandInputBuffer += char;
+                                stream.write(char);
+                            }
+                        }
+                        return;
+                    }
                     if (state.commandMode) {
                         const char = input[0];
                         if (char === 'q' || char === 'd') stream.end();
-                        else {
+                        else if (char === ':') {
+                            state.commandInputMode = true;
+                            state.commandInputBuffer = '';
+                            stream.write('\r\n:');
+                        } else {
                             const num = parseInt(char);
                             if (!isNaN(num)) {
                                 const connections = Array.from(activeConnections.entries());
