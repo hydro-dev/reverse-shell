@@ -13,27 +13,41 @@ export class SSHConnection {
     commandMode: boolean = true;
     commandInputMode: boolean = false;
     commandInputBuffer: string = '';
+    tmuxInterceptMode: boolean = false;
     rows?: number;
     cols?: number;
     constructor(public stream: any) { }
 
     drawBottomBar() {
         if (!this.rows || !this.cols || !this.stream) return;
-        const status = this.selectedId
-            ? (() => {
-                const info = activeConnections.get(this.selectedId);
-                const label = info && info.user && info.os ? `${info.user}@${info.os}` : this.selectedId || 'None';
-                return `[Connected to: ${label}]`;
-            })()
-            : '[Command Mode]';
+        let status: string;
+        if (this.tmuxInterceptMode) {
+            status = '[Tmux >_]';
+        } else if (this.commandMode) {
+            status = '[Command Mode]';
+        } else if (this.selectedId) {
+            const info = activeConnections.get(this.selectedId);
+            const label = info && info.user && info.os ? `${info.user}@${info.os}` : this.selectedId || 'None';
+            status = `[Connected: ${label}]`;
+        } else {
+            status = '[No Connection]';
+        }
 
-        // Build tab string with bold for active
+        // Build tab string with bold for active, tmux-aware format
         let tabContent = '';
         let index = 1;
         activeConnections.forEach((info, id) => {
             const isActive = id === this.selectedId;
             const label = info.user && info.os ? `${info.user}@${info.os}` : id;
-            tabContent += (isActive ? '\x1b[1m' : '') + ` ${index}:${label} ` + (isActive ? '\x1b[22m' : '');
+            let prefix: string;
+            if (info.tmuxEnabled) {
+                prefix = isActive
+                    ? `[<${info.tmuxCurrentWindow}>,${info.tmuxWindowCount}]`
+                    : `[${index}]`;
+            } else {
+                prefix = `${index}`;
+            }
+            tabContent += (isActive ? '\x1b[1m' : '') + ` ${prefix}:${label} ` + (isActive ? '\x1b[22m' : '');
             index++;
         });
 
@@ -52,9 +66,8 @@ export class SSHConnection {
         const paddingVisLength = this.cols - tabVisLength - statusVisLength;
         const padding = ' '.repeat(Math.max(0, paddingVisLength));
 
-        // Full line: set color bg based on commandMode, write tabs, padding, status, reset
-        // 44 = blue bg, 42 = green bg (for command mode)
-        const bgColor = this.commandMode ? '42' : '44';
+        // Full line: set color bg based on mode (42=green commandMode, 43=yellow tmuxIntercept, 44=blue passthrough)
+        const bgColor = this.commandMode ? '42' : (this.tmuxInterceptMode ? '43' : '44');
         const fullLine = `\x1b[${bgColor};37m` + tabContent + padding + status + '\x1b[0m';
 
         // Since padding is visible spaces, and all in the same background color, it should fill
@@ -74,6 +87,9 @@ export class ConnectionInfo {
     serializeAddon: SerializeAddon;
     rows = 24;
     cols = 80;
+    tmuxEnabled: boolean = false;
+    tmuxCurrentWindow: number = 1;
+    tmuxWindowCount: number = 1;
 
     constructor(socket: Socket, user: string, os: string) {
         this.socket = socket;

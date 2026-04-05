@@ -48,6 +48,17 @@ reverseShellServer.on('connection', (socket) => {
             activeSSHConnections.forEach((sshState, cl) => {
                 sshState.drawBottomBar();
             });
+            // Try to start tmux after a short delay to let the PTY settle
+            setTimeout(() => {
+                info.socket.write(
+                    'if which tmux > /dev/null 2>&1; then' +
+                    ' printf "\\x1b[9198t";' +
+                    ' tmux new-session -d -s omc 2>/dev/null;' +
+                    ' tmux set -g mouse on;' +
+                    ' tmux attach -t omc;' +
+                    ' else printf "\\x1b[9197t"; fi\n',
+                );
+            }, 300);
         }
         if (str.includes('---START_INFO2---')) {
             buffer += str.split('---START_INFO2---')[1];
@@ -58,7 +69,22 @@ reverseShellServer.on('connection', (socket) => {
     }
     info.socket.on('data', infoCallback);
 
-    info.socket.on('data', (data) => {
+    info.socket.on('data', (rawData) => {
+        // Strip and parse tmux status markers before any forwarding
+        let data = rawData;
+        const rawStr = rawData.toString('binary');
+        if (rawStr.includes('\x1b[9198t') || rawStr.includes('\x1b[9197t')) {
+            if (rawStr.includes('\x1b[9198t')) {
+                info.tmuxEnabled = true;
+                info.tmuxCurrentWindow = 1;
+                info.tmuxWindowCount = 1;
+                activeSSHConnections.forEach(s => s.drawBottomBar());
+            }
+            const cleaned = rawStr.split('\x1b[9198t').join('').split('\x1b[9197t').join('');
+            data = Buffer.from(cleaned, 'binary');
+            if (!data.length) return;
+        }
+
         const str = data.toString();
         if (str.includes('SHELL_EXITED')) {
             activeSSHConnections.forEach((sshConn, client) => {
@@ -73,7 +99,7 @@ reverseShellServer.on('connection', (socket) => {
         activeSSHConnections.forEach((sshConn) => {
             if (sshConn.selectedId === connectionId && sshConn.stream) {
                 sshConn.stream.write(data);
-                if (data.toString().includes('\x1b[2J')) {
+                if (str.includes('\x1b[2J')) {
                     sshConn.drawBottomBar();
                 }
             }
@@ -87,6 +113,7 @@ reverseShellServer.on('connection', (socket) => {
             if (sshState.selectedId === connectionId) {
                 sshState.selectedId = null;
                 sshState.commandMode = true;
+                sshState.tmuxInterceptMode = false;
                 sshState.stream?.write('\r\nReverse shell connection closed.\r\nEntering command mode.\r\n');
                 sshState.drawBottomBar();
             }

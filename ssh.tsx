@@ -180,10 +180,45 @@ const sshServer = new Server({
                 stream.on('data', (data: Buffer) => {
                     const input = data.toString();
                     if (data[0] === 2) { // Ctrl+B
-                        if (!state.commandMode) state.commandMode = true;
-                        else if (state.selectedId) {
+                        if (state.tmuxInterceptMode) {
+                            // ctrl-b inside tmux intercept → enter admin command mode
+                            state.tmuxInterceptMode = false;
+                            state.commandMode = true;
+                        } else if (!state.commandMode) {
+                            const conn = state.selectedId ? activeConnections.get(state.selectedId) : null;
+                            if (conn?.tmuxEnabled) {
+                                state.tmuxInterceptMode = true;
+                            } else {
+                                state.commandMode = true;
+                            }
+                        } else if (state.selectedId) {
                             state.commandMode = false;
-                            activeConnections.get(state.selectedId)?.socket.write(data);
+                            const conn = activeConnections.get(state.selectedId);
+                            if (!conn?.tmuxEnabled) {
+                                activeConnections.get(state.selectedId)?.socket.write(data);
+                            }
+                        }
+                        state.drawBottomBar();
+                        return;
+                    }
+                    // Handle tmux intercept mode: next key after ctrl-b is a tmux command
+                    if (state.tmuxInterceptMode) {
+                        state.tmuxInterceptMode = false;
+                        const conn = state.selectedId ? activeConnections.get(state.selectedId) : null;
+                        if (conn) {
+                            const char = input[0];
+                            if (char >= '1' && char <= '9') {
+                                conn.socket.write(Buffer.from([2, char.charCodeAt(0)]));
+                                conn.tmuxCurrentWindow = parseInt(char);
+                            } else if (char === 'c') {
+                                conn.socket.write(Buffer.from([2, 99])); // ctrl-b + c
+                                conn.tmuxWindowCount++;
+                                conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                            } else {
+                                // Forward ctrl-b + key for other tmux operations
+                                conn.socket.write(Buffer.from([2]));
+                                conn.socket.write(data);
+                            }
                         }
                         state.drawBottomBar();
                         return;
@@ -220,6 +255,17 @@ const sshServer = new Server({
                             state.commandInputMode = true;
                             state.commandInputBuffer = '';
                             stream.write('\r\n:');
+                        } else if (char === 'c') {
+                            if (state.selectedId) {
+                                const conn = activeConnections.get(state.selectedId);
+                                if (conn?.tmuxEnabled) {
+                                    conn.socket.write(Buffer.from([2, 99])); // ctrl-b + c
+                                    conn.tmuxWindowCount++;
+                                    conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                                    state.commandMode = false;
+                                    state.drawBottomBar();
+                                }
+                            }
                         } else {
                             const num = parseInt(char);
                             if (!isNaN(num)) {
