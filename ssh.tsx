@@ -109,22 +109,25 @@ const sshServer = new Server({
                                 stream.write('Error: no connection selected\r\n');
                                 break;
                             }
-                            const remotePort = parseInt(parts[1]);
+                            const expose = parts.includes('--expose');
+                            const fwdArgs = parts.slice(1).filter(p => p !== '--expose');
+                            const remotePort = parseInt(fwdArgs[0]);
                             if (isNaN(remotePort) || remotePort < 1 || remotePort > 65535) {
-                                stream.write('Usage: fwd <remotePort> [localPort]\r\n');
+                                stream.write('Usage: fwd <remotePort> [localPort] [--expose]\r\n');
                                 break;
                             }
-                            const rawLocal = parseInt(parts[2]);
+                            const rawLocal = parseInt(fwdArgs[1]);
                             const isManual = !isNaN(rawLocal);
                             const connId = state.selectedId;
+                            const bindAddr = expose ? '0.0.0.0' : '127.0.0.1';
                             if (isManual) {
                                 if (rawLocal < 1 || rawLocal > 65535) {
                                     stream.write('Error: local port must be between 1 and 65535\r\n');
                                     break;
                                 }
-                                registerTunnel(connId, remotePort, rawLocal)
+                                registerTunnel(connId, remotePort, rawLocal, expose)
                                     .then(() => {
-                                        stream.write(`[+] Tunnel: 127.0.0.1:${rawLocal} -> target:${remotePort}\r\n`);
+                                        stream.write(`[+] Tunnel: ${bindAddr}:${rawLocal} -> target:${remotePort}\r\n`);
                                         state.drawBottomBar();
                                     })
                                     .catch((e: Error) => {
@@ -134,10 +137,10 @@ const sshServer = new Server({
                             } else {
                                 findAvailablePort(10000 + remotePort)
                                     .then((localPort) =>
-                                        registerTunnel(connId, remotePort, localPort).then(() => localPort),
+                                        registerTunnel(connId, remotePort, localPort, expose).then(() => localPort),
                                     )
                                     .then((localPort) => {
-                                        stream.write(`[+] Tunnel: 127.0.0.1:${localPort} -> target:${remotePort}\r\n`);
+                                        stream.write(`[+] Tunnel: ${bindAddr}:${localPort} -> target:${remotePort}\r\n`);
                                         state.drawBottomBar();
                                     })
                                     .catch((e: Error) => {
@@ -214,6 +217,9 @@ const sshServer = new Server({
                                 conn.socket.write(Buffer.from([2, 99])); // ctrl-b + c
                                 conn.tmuxWindowCount++;
                                 conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                            } else if (char === 'd') {
+                                stream.end();
+                                return;
                             } else {
                                 // Forward ctrl-b + key for other tmux operations
                                 conn.socket.write(Buffer.from([2]));

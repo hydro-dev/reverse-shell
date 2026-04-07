@@ -108,11 +108,14 @@ export function registerTunnel(
     connectionId: string,
     remotePort: number,
     localPort: number,
+    expose: boolean = false,
 ): Promise<void> {
     const key = `${connectionId}:${remotePort}`;
     if (activeTunnels.has(key)) {
         return Promise.reject(new Error(`Tunnel ${key} already active`));
     }
+
+    const bindHost = expose ? '0.0.0.0' : '127.0.0.1';
 
     return new Promise((resolve, reject) => {
         const localServer = net.createServer((localSocket) => {
@@ -133,9 +136,8 @@ export function registerTunnel(
             tryBridge(25);
         });
 
-        localServer.listen(localPort, () => {
+        localServer.listen(localPort, bindHost, () => {
             activeTunnels.set(key, { server: localServer, localPort, connectionId, remotePort });
-            requestTargetTunnel(connectionId, remotePort);
             resolve();
         });
 
