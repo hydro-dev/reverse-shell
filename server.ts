@@ -14,8 +14,19 @@ const script = fs.readFileSync(path.join(__dirname, 'client.py'), 'utf-8');
 // Bootstrap command: write client.py to /tmp and run as daemon with reconnect loop
 const escapedScript = script.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
 
-// Track legacy connections by remote IP so python client can replace them
-const legacyByIp = new Map<string, string>(); // remoteIp -> connectionId
+const sanitizeInput = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, '');
+const normalizeIp = (ip: string) => {
+    const cleaned = ip.replace('::ffff:', '');
+    if (cleaned === '::1') return '127.0.0.1';
+    return cleaned;
+};
+const refreshAllBottomBars = () => activeSSHConnections.forEach(s => s.drawBottomBar());
+const destroySocketSafe = (socket: net.Socket) => {
+    try {
+        socket.removeAllListeners();
+        socket.destroy();
+    } catch (e) { }
+};
 
 function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
     let isInfo = false;
@@ -25,12 +36,11 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
         if (str.includes('---END_INFO2---') && isInfo) {
             infoBuf += str.split('---END_INFO2---')[0];
             for (const l of infoBuf.split(/[\r\n]/)) {
-                const sanitize = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, '');
-                if (l.startsWith('PRETTY_NAME=')) info.os = sanitize(l.slice('PRETTY_NAME='.length).replace(/"/g, '').trim());
-                else if (l.startsWith('WHOAMI=')) info.user = sanitize(l.slice('WHOAMI='.length).trim());
+                if (l.startsWith('PRETTY_NAME=')) info.os = sanitizeInput(l.slice('PRETTY_NAME='.length).replace(/"/g, '').trim());
+                else if (l.startsWith('WHOAMI=')) info.user = sanitizeInput(l.slice('WHOAMI='.length).trim());
             }
             socket.off('data', infoCallback);
-            activeSSHConnections.forEach(s => s.drawBottomBar());
+            refreshAllBottomBars();
             setTimeout(() => {
                 socket.write(
                     'if which tmux > /dev/null 2>&1; then' +
@@ -47,7 +57,7 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
     };
     socket.on('data', infoCallback);
     socket.write('echo ---START_INFO$[1+1]---\necho WHOAMI=$(whoami)\ncat /etc/os-release\necho ---END_INFO$[1+1]---\n');
-    activeSSHConnections.forEach(s => s.drawBottomBar());
+    refreshAllBottomBars();
 }
 
 function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.Socket) {
@@ -110,8 +120,8 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
                             sshState.stream?.write('\r\n[connection timed out]\r\n');
                             sshState.stream?.write('\x1b[r');
                         }
-                        sshState.drawBottomBar();
                     });
+                    refreshAllBottomBars();
                 }
             }, 5 * 60 * 1000);
         }
@@ -119,8 +129,8 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
             if (sshState.selectedId === connectionId) {
                 sshState.stream?.write('\r\n[disconnected, waiting for reconnect...]\r\n');
             }
-            sshState.drawBottomBar();
         });
+        refreshAllBottomBars();
         clearInterval(interval);
     });
 
@@ -148,21 +158,17 @@ reverseShellServer.on('connection', (socket) => {
         attachSocket(connectionId, info, socket);
         startInfoCollection(socket, info);
 
-        const remoteIp = (socket.remoteAddress ?? '').replace('::ffff:', '');
-        legacyByIp.set(remoteIp, connectionId);
-
         // Clean up on close for legacy connections (no reconnect)
         socket.on('close', () => {
             activeConnections.delete(connectionId);
-            legacyByIp.delete(remoteIp);
             activeSSHConnections.forEach((sshState) => {
                 if (sshState.selectedId === connectionId) {
                     sshState.selectedId = null;
                     sshState.commandMode = true;
                     sshState.tmuxInterceptMode = false;
-                    sshState.drawBottomBar();
                 }
             });
+            refreshAllBottomBars();
         });
 
         // Also try to bootstrap python client in background for future reconnects
@@ -195,74 +201,61 @@ reverseShellServer.on('connection', (socket) => {
             const hasTmux = line.endsWith(' TMUX');
             const payload = hasTmux ? line.slice(6, -5) : line.slice(6);
             const parts = payload.split(' ');
-            // Strip control characters from all fields to prevent terminal escape leaks
-            const sanitize = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, '');
-            const clientId = sanitize(parts[0]);
-            const whoami = sanitize(parts[1] ?? '');
-            const osName = sanitize(parts.slice(2).join(' '));
+            const clientId = sanitizeInput(parts[0]);
+            const whoami = sanitizeInput(parts[1] ?? '');
+            const osName = sanitizeInput(parts.slice(2).join(' '));
             console.log(`[+] HELLO from client_id=${clientId} user=${whoami} os=${osName} tmux=${hasTmux}`);
 
             // Clean up ALL legacy connections from same IP
-            const normalizeIp = (ip: string) => {
-                ip = ip.replace('::ffff:', '');
-                if (ip === '::1') return '127.0.0.1';
-                return ip;
-            };
             const remoteIp = normalizeIp(socket.remoteAddress ?? '');
             for (const [connId, connInfo] of activeConnections) {
                 // Legacy connections use ip:port format as key
                 if (!connId.includes(':')) continue;
                 const connIp = normalizeIp(connInfo.socket?.remoteAddress ?? '');
-                if (connIp === remoteIp) {
-                    console.log(`[*] Cleaning up legacy connection: ${connId}`);
-                    try { connInfo.socket.removeAllListeners(); connInfo.socket.destroy(); } catch (e) { }
-                    activeConnections.delete(connId);
-                    // Reset any SSH sessions that were viewing this legacy connection
-                    activeSSHConnections.forEach((sshState) => {
-                        if (sshState.selectedId === connId) {
-                            sshState.selectedId = null;
-                            sshState.commandMode = true;
-                            sshState.stream?.write('\x1b[2J\x1b[H');
-                            sshState.stream?.write('\x1b[r');
-                            sshState.stream?.write('[legacy connection upgraded to python client]\r\n');
-                            sshState.drawBottomBar();
-                        }
-                    });
-                }
+                if (connIp !== remoteIp) continue;
+                console.log(`[*] Cleaning up legacy connection: ${connId}`);
+                destroySocketSafe(connInfo.socket);
+                activeConnections.delete(connId);
+                // Reset any SSH sessions that were viewing this legacy connection
+                for (const [, sshState] of activeSSHConnections) {
+                    if (sshState.selectedId !== connId) continue;
+                    sshState.selectedId = null;
+                    sshState.commandMode = true;
+                    sshState.stream?.write('\x1b[2J\x1b[H');
+                    sshState.stream?.write('\x1b[r');
+                    sshState.stream?.write('[legacy connection upgraded to python client]\r\n');
+                };
             }
-            legacyByIp.delete(remoteIp);
 
             const existing = activeConnections.get(clientId);
             if (existing) {
                 // Reconnect: reuse existing ConnectionInfo, swap socket
                 console.log(`[*] Reconnect: restoring session for ${clientId}`);
-                try { existing.socket.removeAllListeners(); existing.socket.destroy(); } catch (e) { }
+                destroySocketSafe(existing.socket);
                 if (hasTmux) existing.tmuxEnabled = true;
                 existing.disconnected = false;
                 existing.disconnectedAt = 0;
                 existing.socket = socket;
                 attachSocket(clientId, existing, socket);
-                activeSSHConnections.forEach((sshState) => {
-                    if (sshState.selectedId === clientId) {
-                        sshState.stream?.write('\r\n[reconnected]\r\n');
-                        if (sshState.rows && sshState.cols) {
-                            existing.terminal.resize(sshState.cols, sshState.rows - 1);
-                            sshState.stream?.write('\x1b[2J\x1b[H');
-                            sshState.stream?.write(`\x1b[1;${sshState.rows - 1}r`);
-                            sshState.stream?.write(existing.serializeAddon.serialize());
-                        }
-                        sshState.drawBottomBar();
+                for (const [, sshState] of activeSSHConnections) {
+                    if (sshState.selectedId !== clientId) continue;
+                    sshState.stream?.write('\r\n[reconnected]\r\n');
+                    if (sshState.rows && sshState.cols) {
+                        existing.terminal.resize(sshState.cols, sshState.rows - 1);
+                        sshState.stream?.write('\x1b[2J\x1b[H');
+                        sshState.stream?.write(`\x1b[1;${sshState.rows - 1}r`);
+                        sshState.stream?.write(existing.serializeAddon.serialize());
                     }
-                });
+                };
             } else {
                 // New python client
                 const info = new ConnectionInfo(socket, whoami, osName);
                 if (hasTmux) info.tmuxEnabled = true;
                 activeConnections.set(clientId, info);
                 attachSocket(clientId, info, socket);
-                activeSSHConnections.forEach(s => s.drawBottomBar());
             }
 
+            refreshAllBottomBars();
             // Replay any buffered data after the header
             if (rest.length) socket.emit('data', rest);
 
