@@ -39,6 +39,7 @@ export class SSHConnection {
         activeConnections.forEach((info, id) => {
             const isActive = id === this.selectedId;
             const label = info.user && info.os ? `${info.user}@${info.os}` : id;
+            const dcTag = info.disconnected ? ' [DC]' : '';
             let prefix: string;
             if (info.tmuxEnabled) {
                 prefix = isActive
@@ -47,7 +48,7 @@ export class SSHConnection {
             } else {
                 prefix = `${index}`;
             }
-            tabContent += (isActive ? '\x1b[1m' : '') + ` ${prefix}:${label} ` + (isActive ? '\x1b[22m' : '');
+            tabContent += (isActive ? '\x1b[1m' : '') + ` ${prefix}:${label}${dcTag} ` + (isActive ? '\x1b[22m' : '');
             index++;
         });
 
@@ -90,6 +91,8 @@ export class ConnectionInfo {
     tmuxEnabled: boolean = false;
     tmuxCurrentWindow: number = 1;
     tmuxWindowCount: number = 1;
+    disconnected: boolean = false;
+    disconnectedAt: number = 0;
 
     constructor(socket: Socket, user: string, os: string) {
         this.socket = socket;
