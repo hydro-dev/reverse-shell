@@ -70,6 +70,11 @@ def do_tunnel(remote_port, tunnel_port, server_ip, conn_id):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((server_ip, tunnel_port))
         log(f'do_tunnel connected to {server_ip}:{tunnel_port}')
+        # Wait for READY signal from server before sending header
+        ready = s.recv(64)
+        if b'READY' not in ready:
+            log(f'do_tunnel: no READY, got {ready!r}')
+            return
         s.sendall(f'TUNNEL {conn_id} {remote_port}\n'.encode())
         r = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         r.connect(('127.0.0.1', remote_port))
