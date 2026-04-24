@@ -57,7 +57,7 @@ const tunnelServer = net.createServer((targetSocket) => {
     targetSocket.on('error', () => {});
 });
 
-tunnelServer.listen(TUNNEL_SERVER_PORT, () => {
+tunnelServer.listen(TUNNEL_SERVER_PORT, '0.0.0.0', () => {
     console.log(`[*] Tunnel server listening on port ${TUNNEL_SERVER_PORT}`);
 });
 
