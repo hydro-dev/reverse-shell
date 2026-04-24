@@ -99,6 +99,9 @@ def new_shell():
         os.setsid()
         os.dup2(s, 0); os.dup2(s, 1); os.dup2(s, 2)
         os.close(m); os.close(s)
+        env = dict(os.environ)
+        for k in ('TMUX', 'TMUX_PANE'):
+            env.pop(k, None)
         if _has_tmux:
             os.execve('/bin/bash', ['/bin/bash', '-c',
                 'while true; do '
@@ -106,9 +109,9 @@ def new_shell():
                 'tmux set -g mouse on 2>/dev/null; '
                 'tmux attach -t omc; '
                 'sleep 0.1; done'
-            ], os.environ)
+            ], env)
         else:
-            os.execve('/bin/bash', ['/bin/bash'], os.environ)
+            os.execve('/bin/bash', ['/bin/bash'], env)
     os.close(s)
     return p, m
 

