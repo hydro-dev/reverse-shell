@@ -2,6 +2,49 @@ import { Socket } from 'net';
 import { Connection } from 'ssh2';
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { networkInterfaces } from 'os';
+import { get } from 'https';
+
+const PRIVATE_RE = [
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./,
+    /^127\./,
+];
+
+function getPublicIpFromWeb(): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const req = get('https://ip.sb', { headers: { 'User-Agent': 'curl/8.0' } }, (res) => {
+            let data = '';
+            res.on('data', (chunk: Buffer) => { data += chunk; });
+            res.on('end', () => resolve(data.trim()));
+        });
+        req.on('error', reject);
+        req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
+    });
+}
+
+async function resolveServerIp(): Promise<string> {
+    if (process.env.SERVER_PUBLIC_IP) return process.env.SERVER_PUBLIC_IP;
+
+    const ifaces = networkInterfaces();
+    for (const name in ifaces) {
+        for (const iface of ifaces[name] ?? []) {
+            if (iface.internal || iface.family !== 'IPv4') continue;
+            if (!PRIVATE_RE.some(r => r.test(iface.address))) return iface.address;
+        }
+    }
+
+    try { return await getPublicIpFromWeb(); } catch {}
+    return '127.0.0.1';
+}
+
+export let serverIp = '127.0.0.1';
+export const serverIpReady = resolveServerIp().then(ip => {
+    serverIp = ip;
+    console.log(`[*] Server IP: ${serverIp}`);
+});
 
 
 const visibleLength = (str: string): number => {

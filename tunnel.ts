@@ -1,5 +1,5 @@
 import * as net from 'net';
-import { activeConnections } from './state';
+import { activeConnections, serverIp } from './state';
 
 export const TUNNEL_SERVER_PORT = 13337;
 
@@ -83,7 +83,6 @@ function bridge(a: net.Socket, b: net.Socket) {
 export function requestTargetTunnel(connectionId: string, remotePort: number) {
     const connInfo = activeConnections.get(connectionId);
     if (!connInfo) return;
-    const serverIp = (connInfo.socket.localAddress ?? '127.0.0.1').replace('::ffff:', '');
     connInfo.socket.write(`\x1b[9;${remotePort};${TUNNEL_SERVER_PORT};${serverIp};${connectionId}t`);
 }
 
