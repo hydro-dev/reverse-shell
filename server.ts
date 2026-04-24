@@ -33,8 +33,10 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
     let infoBuf = '';
     const infoCallback = (data: Buffer) => {
         const str = data.toString();
+        if (str.includes('---START_INFO2---')) { infoBuf += str.split('---START_INFO2---')[1]; isInfo = true; }
+        else if (isInfo) { infoBuf += str; }
         if (str.includes('---END_INFO2---') && isInfo) {
-            infoBuf += str.split('---END_INFO2---')[0];
+            infoBuf = infoBuf.split('---END_INFO2---')[0];
             for (const l of infoBuf.split(/[\r\n]/)) {
                 if (l.startsWith('PRETTY_NAME=')) info.os = sanitizeInput(l.slice('PRETTY_NAME='.length).replace(/"/g, '').trim());
                 else if (l.startsWith('WHOAMI=')) info.user = sanitizeInput(l.slice('WHOAMI='.length).trim());
@@ -52,8 +54,6 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
                 );
             }, 300);
         }
-        if (str.includes('---START_INFO2---')) { infoBuf += str.split('---START_INFO2---')[1]; isInfo = true; }
-        else if (isInfo) { infoBuf += str; }
     };
     socket.on('data', infoCallback);
     socket.write('echo ---START_INFO$[1+1]---\necho WHOAMI=$(whoami)\ncat /etc/os-release\necho ---END_INFO$[1+1]---\n');
