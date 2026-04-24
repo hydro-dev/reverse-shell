@@ -64,22 +64,26 @@ def set_winsize(fd, rows, cols):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
 def do_tunnel(remote_port, tunnel_port, server_ip, conn_id):
+    log(f'do_tunnel start: remote={remote_port} tunnel={tunnel_port} server={server_ip} conn={conn_id}')
     s = r = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((server_ip, tunnel_port))
+        log(f'do_tunnel connected to {server_ip}:{tunnel_port}')
         s.sendall(f'TUNNEL {conn_id} {remote_port}\n'.encode())
         r = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         r.connect(('127.0.0.1', remote_port))
+        log(f'do_tunnel connected to localhost:{remote_port}')
         while True:
             rd, _, _ = select.select([s, r], [], [])
             for sock in rd:
                 data = sock.recv(4096)
                 if not data:
+                    log(f'do_tunnel: peer closed')
                     return
                 (r if sock is s else s).sendall(data)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f'do_tunnel error: {e}')
     finally:
         for sock in [s, r]:
             try:
