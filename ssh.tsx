@@ -193,11 +193,8 @@ const sshServer = new Server({
                                 state.commandMode = true;
                             }
                         } else if (state.selectedId) {
-                            state.commandMode = false;
-                            const conn = activeConnections.get(state.selectedId);
-                            if (!conn?.tmuxEnabled) {
-                                activeConnections.get(state.selectedId)?.socket.write(data);
-                            }
+                            // ctrl-b in command mode with selected connection → enter delete confirm mode
+                            state.deleteConfirmMode = true;
                         }
                         state.drawBottomBar();
                         return;
@@ -254,6 +251,35 @@ const sshServer = new Server({
                     }
                     if (state.commandMode) {
                         const char = input[0];
+                        if (state.deleteConfirmMode) {
+                            state.deleteConfirmMode = false;
+                            if (char === 'x' && state.selectedId) {
+                                const connId = state.selectedId;
+                                const connInfo = activeConnections.get(connId);
+                                if (connInfo) {
+                                    const label = connInfo.user && connInfo.os ? `${connInfo.user}@${connInfo.os}` : connId;
+                                    // Destroy the socket and remove from active connections
+                                    try { connInfo.socket.removeAllListeners(); connInfo.socket.destroy(); } catch {}
+                                    activeConnections.delete(connId);
+                                    // Also clean up any tunnels for this connection
+                                    for (const [, tunnel] of activeTunnels) {
+                                        if (tunnel.connectionId === connId) {
+                                            unregisterTunnel(connId, tunnel.remotePort);
+                                        }
+                                    }
+                                    // Reset SSH state if viewing this connection
+                                    state.selectedId = null;
+                                    state.commandMode = true;
+                                    stream.write(`\r\n[+] Deleted connection: ${label}\r\n`);
+                                    state.drawBottomBar();
+                                }
+                            } else {
+                                // Cancelled
+                                stream.write('\r\nDelete cancelled\r\n');
+                                state.drawBottomBar();
+                            }
+                            return;
+                        }
                         if (char === 'q' || char === 'd') stream.end();
                         else if (char === ':') {
                             state.commandInputMode = true;

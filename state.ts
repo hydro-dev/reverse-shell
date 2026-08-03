@@ -57,6 +57,7 @@ export class SSHConnection {
     commandInputMode: boolean = false;
     commandInputBuffer: string = '';
     tmuxInterceptMode: boolean = false;
+    deleteConfirmMode: boolean = false;
     rows?: number;
     cols?: number;
     constructor(public stream: any) { }
@@ -66,6 +67,8 @@ export class SSHConnection {
         let status: string;
         if (this.tmuxInterceptMode) {
             status = '[Tmux >_]';
+        } else if (this.deleteConfirmMode) {
+            status = '[Delete? x=confirm]';
         } else if (this.commandMode) {
             status = '[Command Mode]';
         } else if (this.selectedId) {
@@ -110,8 +113,8 @@ export class SSHConnection {
         const paddingVisLength = this.cols - tabVisLength - statusVisLength;
         const padding = ' '.repeat(Math.max(0, paddingVisLength));
 
-        // Full line: set color bg based on mode (42=green commandMode, 43=yellow tmuxIntercept, 44=blue passthrough)
-        const bgColor = this.commandMode ? '42' : (this.tmuxInterceptMode ? '43' : '44');
+        // Full line: set color bg based on mode (41=red deleteConfirm, 42=green commandMode, 43=yellow tmuxIntercept, 44=blue passthrough)
+        const bgColor = this.deleteConfirmMode ? '41' : (this.commandMode ? '42' : (this.tmuxInterceptMode ? '43' : '44'));
         const fullLine = `\x1b[${bgColor};37m` + tabContent + padding + status + '\x1b[0m';
 
         // Since padding is visible spaces, and all in the same background color, it should fill
