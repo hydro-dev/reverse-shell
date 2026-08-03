@@ -2,8 +2,10 @@ import { Socket } from 'net';
 import { Connection } from 'ssh2';
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { networkInterfaces } from 'os';
+import { networkInterfaces, homedir } from 'os';
 import { get } from 'https';
+import fs from 'fs';
+import path from 'path';
 
 const PRIVATE_RE = [
     /^10\./,
@@ -47,6 +49,39 @@ export const serverIpReady = resolveServerIp().then(ip => {
 });
 
 
+// Persistent aliases keyed by stable client id (client.py derives it from /etc/machine-id).
+const aliasesPath = path.join(homedir(), '.ssh', 'aliases.json');
+export const aliasesByClientId = new Map<string, string>();
+
+export function loadAliases() {
+    try {
+        const obj = JSON.parse(fs.readFileSync(aliasesPath, 'utf-8'));
+        if (obj && typeof obj === 'object') {
+            for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+                if (typeof v === 'string' && v) aliasesByClientId.set(k, v);
+            }
+        }
+        console.log(`[*] Loaded ${aliasesByClientId.size} alias(es) from ${aliasesPath}`);
+    } catch (e: any) {
+        if (e?.code !== 'ENOENT') console.error(`[!] Failed to load aliases: ${e.message}`);
+    }
+}
+
+export function setAlias(clientId: string, alias: string) {
+    if (!clientId) return;
+    if (alias) aliasesByClientId.set(clientId, alias);
+    else aliasesByClientId.delete(clientId);
+    try {
+        const obj: Record<string, string> = {};
+        for (const [k, v] of aliasesByClientId) obj[k] = v;
+        fs.writeFileSync(aliasesPath, JSON.stringify(obj, null, 2));
+    } catch (e: any) {
+        console.error(`[!] Failed to save aliases: ${e.message}`);
+    }
+}
+
+loadAliases();
+
 const visibleLength = (str: string): number => {
     return str.replace(/\x1b\[[0-9;]*m/g, '').length;
 };
@@ -73,7 +108,7 @@ export class SSHConnection {
             status = '[Command Mode]';
         } else if (this.selectedId) {
             const info = activeConnections.get(this.selectedId);
-            const label = info && info.user && info.os ? `${info.user}@${info.os}` : this.selectedId || 'None';
+            const label = info?.alias || (info && info.user && info.os ? `${info.user}@${info.os}` : this.selectedId) || 'None';
             status = `[Connected: ${label}]`;
         } else {
             status = '[No Connection]';
@@ -84,7 +119,7 @@ export class SSHConnection {
         let index = 1;
         activeConnections.forEach((info, id) => {
             const isActive = id === this.selectedId;
-            const label = info.user && info.os ? `${info.user}@${info.os}` : id;
+            const label = info.alias || (info.user && info.os ? `${info.user}@${info.os}` : id);
             const dcTag = info.disconnected ? ' [DC]' : '';
             let prefix: string;
             if (info.tmuxEnabled) {
@@ -126,6 +161,16 @@ export class SSHConnection {
     }
 }
 
+export const writeSocketSafe = (socket: Socket, data: string | Buffer): boolean => {
+    if (socket.destroyed || !socket.writable || socket.writableEnded) return false;
+    try {
+        return socket.write(data);
+    } catch {
+        try { socket.destroy(); } catch { }
+        return false;
+    }
+};
+
 export class ConnectionInfo {
     socket: Socket;
     user: string;
@@ -140,6 +185,8 @@ export class ConnectionInfo {
     disconnected: boolean = false;
     disconnectedAt: number = 0;
     collectingInfo: boolean = false;
+    alias: string = '';
+    clientId: string = '';
 
     constructor(socket: Socket, user: string, os: string) {
         this.socket = socket;
@@ -154,7 +201,7 @@ export class ConnectionInfo {
         this.terminal.resize(cols, rows);
         this.rows = rows;
         this.cols = cols;
-        this.socket.write(`\x1b[8;${rows};${cols}t`);
+        writeSocketSafe(this.socket, `\x1b[8;${rows};${cols}t`);
     }
 }
 

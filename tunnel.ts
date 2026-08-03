@@ -1,5 +1,5 @@
 import * as net from 'net';
-import { activeConnections, serverIp } from './state';
+import { activeConnections, serverIp, writeSocketSafe } from './state';
 
 export const TUNNEL_SERVER_PORT = 13337;
 
@@ -95,7 +95,7 @@ export function requestTargetTunnel(connectionId: string, remotePort: number) {
     const connInfo = activeConnections.get(connectionId);
     if (!connInfo) { console.log(`[tunnel] requestTargetTunnel: no connection ${connectionId}`); return; }
     console.log(`[tunnel] requesting client tunnel: remote=${remotePort} server=${serverIp}:${TUNNEL_SERVER_PORT} conn=${connectionId}`);
-    connInfo.socket.write(`\x1b[9;${remotePort};${TUNNEL_SERVER_PORT};${serverIp};${connectionId}t`);
+    writeSocketSafe(connInfo.socket, `\x1b[9;${remotePort};${TUNNEL_SERVER_PORT};${serverIp};${connectionId}t`);
 }
 
 export function findAvailablePort(start: number): Promise<number> {

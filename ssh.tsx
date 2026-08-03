@@ -3,7 +3,7 @@ import { Server, utils, ParsedKey } from 'ssh2';
 import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
-import { activeConnections, activeSSHConnections, SSHConnection } from './state';
+import { activeConnections, activeSSHConnections, setAlias, SSHConnection, writeSocketSafe } from './state';
 import { activeTunnels, findAvailablePort, registerTunnel, unregisterTunnel } from './tunnel';
 
 const SSH_PORT = 13336;
@@ -97,7 +97,7 @@ const sshServer = new Server({
 
                 // 清屏并设置初始状态
                 stream.write('\x1b[2J\x1b[H');
-                stream.write('Command mode - Press number to switch tab, l to list, q to quit\r\n');
+                stream.write('Command mode - number=switch tab, l=list, :alias <name>=rename, q=quit\r\n');
                 stream.write('\x1b[r'); // Initial full scroll region for command mode
                 state.drawBottomBar();
 
@@ -172,6 +172,33 @@ const sshServer = new Server({
                             }
                             break;
                         }
+                        case 'alias': {
+                            if (!state.selectedId) {
+                                stream.write('Error: no connection selected (press a number to select one first)\r\n');
+                                break;
+                            }
+                            const connInfo = activeConnections.get(state.selectedId);
+                            if (!connInfo) {
+                                stream.write('Error: selected connection no longer exists\r\n');
+                                break;
+                            }
+                            const aliasArg = parts.slice(1).join(' ').replace(/[\x00-\x1f\x7f]/g, '');
+                            if (!aliasArg) {
+                                if (connInfo.alias) {
+                                    stream.write(`[-] Cleared alias "${connInfo.alias}" for ${state.selectedId}\r\n`);
+                                    connInfo.alias = '';
+                                    setAlias(connInfo.clientId, '');
+                                } else {
+                                    stream.write('Usage: alias <name>  (set an alias for the selected connection)\r\n');
+                                }
+                            } else {
+                                connInfo.alias = aliasArg;
+                                setAlias(connInfo.clientId, aliasArg);
+                                const note = connInfo.clientId ? '' : ' (in-memory only)';
+                                stream.write(`[+] Alias set: ${state.selectedId} -> ${aliasArg}${note}\r\n`);
+                            }
+                            break;
+                        }
                         default:
                             if (parts[0]) stream.write(`Unknown command: ${parts[0]}\r\n`);
                     }
@@ -206,19 +233,21 @@ const sshServer = new Server({
                         if (conn) {
                             const char = input[0];
                             if (char >= '1' && char <= '9') {
-                                conn.socket.write(Buffer.from([2, char.charCodeAt(0)]));
-                                conn.tmuxCurrentWindow = parseInt(char);
+                                if (writeSocketSafe(conn.socket, Buffer.from([2, char.charCodeAt(0)]))) {
+                                    conn.tmuxCurrentWindow = parseInt(char);
+                                }
                             } else if (char === 'c') {
-                                conn.socket.write(Buffer.from([2, 99])); // ctrl-b + c
-                                conn.tmuxWindowCount++;
-                                conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                                if (writeSocketSafe(conn.socket, Buffer.from([2, 99]))) { // ctrl-b + c
+                                    conn.tmuxWindowCount++;
+                                    conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                                }
                             } else if (char === 'd') {
                                 stream.end();
                                 return;
                             } else {
                                 // Forward ctrl-b + key for other tmux operations
-                                conn.socket.write(Buffer.from([2]));
-                                conn.socket.write(data);
+                                writeSocketSafe(conn.socket, Buffer.from([2]));
+                                writeSocketSafe(conn.socket, data);
                             }
                         }
                         state.drawBottomBar();
@@ -289,9 +318,10 @@ const sshServer = new Server({
                             if (state.selectedId) {
                                 const conn = activeConnections.get(state.selectedId);
                                 if (conn?.tmuxEnabled) {
-                                    conn.socket.write(Buffer.from([2, 99])); // ctrl-b + c
-                                    conn.tmuxWindowCount++;
-                                    conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                                    if (writeSocketSafe(conn.socket, Buffer.from([2, 99]))) { // ctrl-b + c
+                                        conn.tmuxWindowCount++;
+                                        conn.tmuxCurrentWindow = conn.tmuxWindowCount;
+                                    }
                                     state.commandMode = false;
                                     state.drawBottomBar();
                                 }
@@ -333,13 +363,16 @@ const sshServer = new Server({
                                 const conns = Array.from(activeConnections.entries());
                                 conns.forEach(([id, info], idx) => {
                                     const num = idx + 1;
-                                    stream.write(`${num}: ${info.user || 'unknown'}@${info.os || 'unknown'} (${id})\r\n`);
+                                    const ident = `${info.user || 'unknown'}@${info.os || 'unknown'}`;
+                                    const label = info.alias ? `${info.alias} | ${ident}` : ident;
+                                    stream.write(`${num}: ${label} (${id})\r\n`);
                                 });
                                 stream.write('\r\n');
                             }
                         }
                     } else if (state.selectedId) {
-                        activeConnections.get(state.selectedId)?.socket.write(data);
+                        const conn = activeConnections.get(state.selectedId);
+                        if (conn) writeSocketSafe(conn.socket, data);
                     }
                 });
 
