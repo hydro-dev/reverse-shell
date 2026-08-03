@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { activeConnections, activeSSHConnections, setAlias, SSHConnection, writeSocketSafe } from './state';
-import { activeTunnels, findAvailablePort, registerTunnel, unregisterTunnel } from './tunnel';
+import { activeTunnels, findAvailablePort, registerTunnel, requestTargetSocket, unregisterTunnel } from './tunnel';
 
 const SSH_PORT = 13336;
 
@@ -28,6 +28,63 @@ const eq = (a: Buffer, b: Buffer) => {
     if (a.length !== b.length) return false;
     return timingSafeEqual(a, b);
 }
+
+const normalizeHost = (ip: string) => {
+    const c = ip.replace('::ffff:', '');
+    return c === '::1' ? '127.0.0.1' : c;
+};
+
+// Resolve a direct-tcpip destIP (from `ssh -J admin@mgmt <user>@<dest>`) to an active
+// connection id, matching by alias first, then client id, then remote IP / legacy ip:port key.
+const resolveConnectionId = (destIP: string): string | null => {
+    for (const [id, info] of activeConnections) {
+        if (info.alias && info.alias === destIP) return id;
+    }
+    if (activeConnections.has(destIP)) return destIP;
+    const target = normalizeHost(destIP);
+    for (const [id, info] of activeConnections) {
+        const rip = info.socket?.remoteAddress;
+        if (rip && normalizeHost(rip) === target) return id;
+        if (id.startsWith(`${target}:`)) return id;
+    }
+    return null;
+};
+
+// SSH direct-tcpip (ssh -J / ssh -L / ssh -W): bridge the channel to remotePort on the target.
+const handleDirectTcpip = (
+    accept: () => any,
+    reject: () => void,
+    info: { destIP: string; destPort: number; srcIP: string; srcPort: number },
+) => {
+    const connId = resolveConnectionId(info.destIP);
+    if (!connId) {
+        console.log(`[tcpip] no connection for dest ${info.destIP}:${info.destPort}`);
+        try { reject(); } catch {}
+        return;
+    }
+    console.log(`[tcpip] direct ${info.srcIP}:${info.srcPort} -> ${info.destIP}:${info.destPort} via ${connId}`);
+    let channel: any;
+    try { channel = accept(); } catch { return; }
+    requestTargetSocket(connId, info.destPort)
+        .then((targetSocket) => {
+            channel.pipe(targetSocket);
+            targetSocket.pipe(channel);
+            const cleanup = () => {
+                try { targetSocket.destroy(); } catch {}
+                try { channel.end(); } catch {}
+                try { channel.close(); } catch {}
+            };
+            channel.on('close', cleanup);
+            channel.on('error', cleanup);
+            targetSocket.on('close', cleanup);
+            targetSocket.on('error', cleanup);
+        })
+        .catch((e: Error) => {
+            console.log(`[tcpip] failed ${connId}:${info.destPort}: ${e.message}`);
+            try { channel.end(); } catch {}
+            try { channel.close(); } catch {}
+        });
+};
 
 const sshServer = new Server({
     hostKeys: [fs.readFileSync(privateKeyPath)],
@@ -59,6 +116,7 @@ const sshServer = new Server({
     });
 
     client.on('ready', () => {
+        client.on('tcpip', (accept, reject, info) => handleDirectTcpip(accept, reject, info));
         client.on('session', (accept, reject) => {
             const session = accept();
 

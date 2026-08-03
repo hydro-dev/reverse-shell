@@ -1,7 +1,7 @@
 import * as net from 'net';
 import { activeConnections, serverIp, writeSocketSafe } from './state';
 
-export const TUNNEL_SERVER_PORT = 13337;
+export const TUNNEL_SERVER_PORT = process.env.TUNNEL_PORT ? parseInt(process.env.TUNNEL_PORT, 10) : 13337;
 
 interface TunnelEntry {
     targetSocket: net.Socket;
@@ -18,6 +18,10 @@ export interface LocalTunnel {
 
 const waitingTargetSockets: TunnelEntry[] = [];
 export const activeTunnels = new Map<string, LocalTunnel>();
+// In-flight reverse-tunnel acquisitions (e.g. SSH direct-tcpip / ProxyJump) that have not
+// registered a persistent net.Server in activeTunnels but should still be accepted by the
+// tunnel server when the target reconnects.
+export const expectedSockets = new Set<string>();
 
 const tunnelServer = net.createServer((targetSocket) => {
     console.log(`[tunnel] target connected from ${targetSocket.remoteAddress}:${targetSocket.remotePort}`);
@@ -47,7 +51,7 @@ const tunnelServer = net.createServer((targetSocket) => {
         const connectionId = parts[1];
         const remotePort = parseInt(parts[2]);
 
-        if (!activeTunnels.has(`${connectionId}:${remotePort}`)) {
+        if (!activeTunnels.has(`${connectionId}:${remotePort}`) && !expectedSockets.has(`${connectionId}:${remotePort}`)) {
             console.log(`[tunnel] no active tunnel for ${connectionId}:${remotePort}`);
             targetSocket.destroy();
             return;
@@ -167,4 +171,26 @@ export function unregisterTunnel(connectionId: string, remotePort: number) {
     waitingTargetSockets
         .filter((e) => e.connectionId === connectionId && e.remotePort === remotePort)
         .forEach((e) => e.targetSocket.destroy());
+}
+
+// Acquire a raw TCP socket to remotePort on the target host (connectionId) via the reverse
+// tunnel protocol, without standing up a persistent net.Server. Used by SSH direct-tcpip
+// (ssh -J / ProxyJump) to bridge an incoming channel straight to a target service.
+export function requestTargetSocket(connectionId: string, remotePort: number, attempts = 30): Promise<net.Socket> {
+    const key = `${connectionId}:${remotePort}`;
+    if (!activeConnections.has(connectionId)) {
+        return Promise.reject(new Error(`no connection ${connectionId}`));
+    }
+    return new Promise((resolve, reject) => {
+        expectedSockets.add(key);
+        const done = (fn: () => void) => { expectedSockets.delete(key); fn(); };
+        const tryAcquire = (left: number) => {
+            const ts = popWaitingSocket(connectionId, remotePort);
+            if (ts) return done(() => resolve(ts));
+            if (left <= 0) return done(() => reject(new Error('target socket timeout')));
+            requestTargetTunnel(connectionId, remotePort);
+            setTimeout(() => tryAcquire(left - 1), 200);
+        };
+        tryAcquire(attempts);
+    });
 }
