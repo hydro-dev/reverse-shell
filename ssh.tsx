@@ -157,9 +157,14 @@ const sshServer = new Server({
                 }
                 console.log('[*] Admin shell session started');
 
+                const closeAdminShell = () => {
+                    try { stream.write('\x1b[?1000l\x1b[?1006l'); } catch {}
+                    stream.end();
+                };
+
                 // 清屏并设置初始状态
                 stream.write('\x1b[2J\x1b[H');
-                stream.write('Command mode - 0=settings, number=switch connection, l=list, :alias <name>=rename, q=quit\r\n');
+                stream.write('Command mode - click tab, 0=settings, number=switch connection, l=list, :alias <name>=rename, q=quit\r\n');
                 stream.write('\x1b[r'); // Initial full scroll region for command mode
                 state.drawBottomBar();
 
@@ -267,11 +272,98 @@ const sshServer = new Server({
                     state.drawBottomBar();
                 };
 
+                const showConnectionPanel = (id: string) => {
+                    const info = activeConnections.get(id);
+                    if (!info) {
+                        state.statusMessage = 'Connection panel no longer exists';
+                        state.commandMode = true;
+                        state.drawBottomBar();
+                        return;
+                    }
+
+                    state.selectedId = id;
+                    state.settingsPanel = false;
+                    state.commandMode = false;
+                    state.commandInputMode = false;
+                    state.commandInputBuffer = '';
+                    state.statusMessage = '';
+                    state.tmuxInterceptMode = false;
+                    state.deleteConfirmMode = false;
+                    if (state.rows && state.cols) {
+                        info.terminal.resize(state.cols, state.rows - 1);
+                        const buffer = info.terminal.buffer.active;
+                        const cursorY = buffer.cursorY + 1;
+                        const cursorX = buffer.cursorX + 1;
+                        console.log('[-] Cursor position', cursorY, cursorX);
+                        stream.write('\x1b[2J');
+                        stream.write(`\x1b[1;${state.rows - 1}r`);
+                        stream.write('\x1b[H');
+                        stream.write(info.serializeAddon.serialize());
+                        stream.write(`\x1b[${cursorY};${cursorX}H`);
+                        info.resize(state.rows - 1, state.cols);
+                    }
+                    state.drawBottomBar();
+                };
+
+                const showConnectionPanelByNumber = (num: number) => {
+                    const connection = Array.from(activeConnections.entries())[num - 1];
+                    if (!connection) {
+                        state.statusMessage = `Invalid connection panel: ${num}`;
+                        state.drawBottomBar();
+                        return;
+                    }
+                    showConnectionPanel(connection[0]);
+                };
+
+                const activatePanelAtColumn = (column: number) => {
+                    const target = state.getPanelAtColumn(column);
+                    if (!target) return;
+                    if (target.type === 'settings') state.showSettingsPanel();
+                    else showConnectionPanel(target.id);
+                };
+
                 stream.on('data', (data: Buffer) => {
-                    const input = data.toString();
+                    let inputData = data;
+                    let input = inputData.toString();
                     // New input clears the previous one-shot status message.
-                    if (state.statusMessage) state.statusMessage = '';
-                    if (data[0] === 2) { // Ctrl+B
+                    if (state.statusMessage) {
+                        state.statusMessage = '';
+                        state.drawBottomBar();
+                    }
+
+                    // SGR mouse reports: ESC [ < button ; column ; row M/m.
+                    // Consume clicks on the protected status row and leave other mouse input
+                    // untouched so a selected remote TUI can still receive it.
+                    const mousePattern = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+                    let filteredInput = '';
+                    let inputOffset = 0;
+                    let consumedStatusMouse = false;
+                    for (const match of input.matchAll(mousePattern)) {
+                        filteredInput += input.slice(inputOffset, match.index);
+                        inputOffset = match.index! + match[0].length;
+                        const button = parseInt(match[1]);
+                        const column = parseInt(match[2]);
+                        const row = parseInt(match[3]);
+                        const eventType = match[4];
+                        if (state.rows && row === state.rows) {
+                            consumedStatusMouse = true;
+                            const isLeftPress = eventType === 'M'
+                                && (button & 3) === 0
+                                && (button & 32) === 0
+                                && (button & 64) === 0;
+                            if (isLeftPress) activatePanelAtColumn(column);
+                        } else {
+                            filteredInput += match[0];
+                        }
+                    }
+                    if (consumedStatusMouse) {
+                        filteredInput += input.slice(inputOffset);
+                        if (!filteredInput) return;
+                        input = filteredInput;
+                        inputData = Buffer.from(filteredInput);
+                    }
+
+                    if (inputData[0] === 2) { // Ctrl+B
                         if (state.tmuxInterceptMode) {
                             // ctrl-b inside tmux intercept → enter admin command mode
                             state.tmuxInterceptMode = false;
@@ -306,12 +398,12 @@ const sshServer = new Server({
                                     conn.tmuxCurrentWindow = conn.tmuxWindowCount;
                                 }
                             } else if (char === 'd') {
-                                stream.end();
+                                closeAdminShell();
                                 return;
                             } else {
                                 // Forward ctrl-b + key for other tmux operations
                                 writeSocketSafe(conn.socket, Buffer.from([2]));
-                                writeSocketSafe(conn.socket, data);
+                                writeSocketSafe(conn.socket, inputData);
                             }
                         }
                         state.drawBottomBar();
@@ -371,7 +463,7 @@ const sshServer = new Server({
                             }
                             return;
                         }
-                        if (char === 'q' || char === 'd') stream.end();
+                        if (char === 'q' || char === 'd') closeAdminShell();
                         else if (char === ':') {
                             state.commandInputMode = true;
                             state.commandInputBuffer = '';
@@ -393,37 +485,7 @@ const sshServer = new Server({
                         } else {
                             const num = parseInt(char);
                             if (!isNaN(num)) {
-                                const connections = Array.from(activeConnections.entries());
-                                if (num > 0 && num <= connections.length) {
-                                    const [id, info] = connections[num - 1];
-                                    state.selectedId = id;
-                                    state.settingsPanel = false;
-                                    state.commandMode = false;
-                                    if (state.rows && state.cols) {
-                                        info.terminal.resize(state.cols, state.rows - 1);
-                                        // Get cursor position before clearing
-                                        const buffer = info.terminal.buffer.active;
-                                        const cursorY = buffer.cursorY + 1; // 1-based
-                                        const cursorX = buffer.cursorX + 1; // 1-based
-                                        console.log('[-] Cursor position', cursorY, cursorX);
-                                        // Clear screen and set scroll region first
-                                        stream.write('\x1b[2J'); // Clear screen
-                                        stream.write(`\x1b[1;${state.rows - 1}r`); // Set scroll region to protect bottom line
-                                        stream.write('\x1b[H'); // Move cursor to home
-                                        // Write serialized content (remove cursor position from it if present)
-                                        const serialized = info.serializeAddon.serialize();
-                                        // Remove cursor position ANSI codes from serialized content
-                                        // const cleanedSerialized = serialized.replace(/\x1b\[\d+;\d+[Hf]/g, '');
-                                        stream.write(serialized);
-                                        // Restore cursor position after everything
-                                        stream.write(`\x1b[${cursorY};${cursorX}H`);
-                                        info.resize(state.rows - 1, state.cols);
-                                    }
-                                    state.drawBottomBar();
-                                } else {
-                                    state.statusMessage = `Invalid connection panel: ${num}`;
-                                    state.drawBottomBar();
-                                }
+                                showConnectionPanelByNumber(num);
                             } else if (char === 'l') {
                                 stream.write('\r\nActive connections:\r\n');
                                 const conns = Array.from(activeConnections.entries());
@@ -438,7 +500,7 @@ const sshServer = new Server({
                         }
                     } else if (state.selectedId) {
                         const conn = activeConnections.get(state.selectedId);
-                        if (conn) writeSocketSafe(conn.socket, data);
+                        if (conn) writeSocketSafe(conn.socket, inputData);
                     }
                 });
 

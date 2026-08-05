@@ -87,6 +87,16 @@ const visibleLength = (str: string): number => {
     return str.replace(/\x1b\[[0-9;]*m/g, '').length;
 };
 
+export type PanelTarget =
+    | { type: 'settings' }
+    | { type: 'connection'; id: string };
+
+type PanelHitArea = {
+    startColumn: number;
+    endColumn: number;
+    target: PanelTarget;
+};
+
 export class SSHConnection {
     selectedId: string | null = null;
     settingsPanel: boolean = false;
@@ -98,7 +108,14 @@ export class SSHConnection {
     deleteConfirmMode: boolean = false;
     rows?: number;
     cols?: number;
+    private panelHitAreas: PanelHitArea[] = [];
     constructor(public stream: any) { }
+
+    getPanelAtColumn(column: number): PanelTarget | null {
+        return this.panelHitAreas.find((area) => (
+            column >= area.startColumn && column <= area.endColumn
+        ))?.target ?? null;
+    }
 
     showSettingsPanel() {
         this.selectedId = null;
@@ -133,7 +150,8 @@ export class SSHConnection {
             `|${fit(' Reserved for future settings.')}|`,
             `|${fit(' No settings are available yet.')}|`,
             `|${fit('')}|`,
-            `|${fit(' Keys')}|`,
+            `|${fit(' Controls')}|`,
+            `|${fit('   Mouse Click a status bar tab')}|`,
             `|${fit('   0     Open this settings panel')}|`,
             `|${fit('   1-9   Switch to a connection panel')}|`,
             `|${fit('   :     Open the command prompt')}|`,
@@ -153,6 +171,7 @@ export class SSHConnection {
 
     drawBottomBar() {
         if (!this.rows || !this.cols || !this.stream) return;
+        this.panelHitAreas = [];
 
         // Command line input takes over the bottom bar (vim-like): no echo into the content area.
         if (this.commandInputMode) {
@@ -183,34 +202,50 @@ export class SSHConnection {
             return;
         }
 
-        // Panel 0 is reserved for settings; connection panels start at 1.
-        let tabContent = (this.settingsPanel ? '\x1b[1m' : '') + ' 0:Settings ' + (this.settingsPanel ? '\x1b[22m' : '');
+        const tabs: Array<{ text: string; active: boolean; target: PanelTarget }> = [{
+            text: ' 0:Settings ',
+            active: this.settingsPanel,
+            target: { type: 'settings' },
+        }];
         let index = 1;
         activeConnections.forEach((info, id) => {
             const isActive = id === this.selectedId;
             const label = info.alias || (info.user && info.os ? `${info.user}@${info.os}` : id);
             const dcTag = info.disconnected ? ' [DC]' : '';
-            let prefix: string;
-            if (info.tmuxEnabled) {
-                prefix = isActive
-                    ? `[<${info.tmuxCurrentWindow}>,${info.tmuxWindowCount}]`
-                    : `[${index}]`;
-            } else {
-                prefix = `${index}`;
-            }
-            tabContent += (isActive ? '\x1b[1m' : '') + ` ${prefix}:${label}${dcTag} ` + (isActive ? '\x1b[22m' : '');
+            const prefix = info.tmuxEnabled
+                ? (isActive ? `[<${info.tmuxCurrentWindow}>,${info.tmuxWindowCount}]` : `[${index}]`)
+                : `${index}`;
+            tabs.push({
+                text: ` ${prefix}:${label}${dcTag} `,
+                active: isActive,
+                target: { type: 'connection', id },
+            });
             index++;
         });
 
-        // Truncate tabs if too long
         const statusVisLength = visibleLength(status);
-        const minStatusSpace = statusVisLength + 2;
-        const availableForTabs = this.cols - minStatusSpace;
-        let tabVisLength = visibleLength(tabContent);
-        if (tabVisLength > availableForTabs) {
-            // Truncate approximately; for simplicity, slice string and adjust
-            tabContent = tabContent.slice(0, Math.floor(tabContent.length * (availableForTabs - 3) / tabVisLength)) + '...';
-            tabVisLength = visibleLength(tabContent);
+        const availableForTabs = Math.max(0, this.cols - statusVisLength - 2);
+        let tabContent = '';
+        let tabVisLength = 0;
+        for (const tab of tabs) {
+            const remaining = availableForTabs - tabVisLength;
+            if (remaining <= 0) break;
+
+            const isTruncated = tab.text.length > remaining;
+            const visibleText = isTruncated
+                ? (remaining > 3 ? tab.text.slice(0, remaining - 3) + '...' : tab.text.slice(0, remaining))
+                : tab.text;
+            if (!visibleText) break;
+
+            const startColumn = tabVisLength + 1;
+            tabVisLength += visibleText.length;
+            this.panelHitAreas.push({
+                startColumn,
+                endColumn: tabVisLength,
+                target: tab.target,
+            });
+            tabContent += (tab.active ? '\x1b[1m' : '') + visibleText + (tab.active ? '\x1b[22m' : '');
+            if (isTruncated) break;
         }
 
         // Calculate visible padding to right-align status: total visible space between tabs and status
@@ -225,6 +260,8 @@ export class SSHConnection {
 
     // Paint a full bottom-bar line (save/restore cursor, clear the line).
     private writeRawStatusBar(fullLine: string) {
+        // Enable basic click tracking with SGR coordinates for terminals wider than 223 columns.
+        this.stream.write('\x1b[?1000h\x1b[?1006h');
         this.stream.write('\x1b[s');
         this.stream.write(`\x1b[${this.rows};0H`);
         this.stream.write('\x1b[2K');
