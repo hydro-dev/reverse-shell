@@ -134,7 +134,9 @@ const sshServer = new Server({
                 accept?.();
                 state.rows = info.rows;
                 state.cols = info.cols;
-                if (state.selectedId) {
+                if (state.settingsPanel) {
+                    state.renderSettingsPanel();
+                } else if (state.selectedId) {
                     const connInfo = activeConnections.get(state.selectedId);
                     if (connInfo && state.rows && state.cols) {
                         connInfo.resize(state.rows - 1, state.cols);
@@ -157,7 +159,7 @@ const sshServer = new Server({
 
                 // 清屏并设置初始状态
                 stream.write('\x1b[2J\x1b[H');
-                stream.write('Command mode - number=switch tab, l=list, :alias <name>=rename, q=quit\r\n');
+                stream.write('Command mode - 0=settings, number=switch connection, l=list, :alias <name>=rename, q=quit\r\n');
                 stream.write('\x1b[r'); // Initial full scroll region for command mode
                 state.drawBottomBar();
 
@@ -374,6 +376,8 @@ const sshServer = new Server({
                             state.commandInputMode = true;
                             state.commandInputBuffer = '';
                             state.drawBottomBar();
+                        } else if (char === '0') {
+                            state.showSettingsPanel();
                         } else if (char === 'c') {
                             if (state.selectedId) {
                                 const conn = activeConnections.get(state.selectedId);
@@ -393,6 +397,7 @@ const sshServer = new Server({
                                 if (num > 0 && num <= connections.length) {
                                     const [id, info] = connections[num - 1];
                                     state.selectedId = id;
+                                    state.settingsPanel = false;
                                     state.commandMode = false;
                                     if (state.rows && state.cols) {
                                         info.terminal.resize(state.cols, state.rows - 1);
@@ -416,7 +421,8 @@ const sshServer = new Server({
                                     }
                                     state.drawBottomBar();
                                 } else {
-                                    stream.write('\r\nInvalid connection number\r\n');
+                                    state.statusMessage = `Invalid connection panel: ${num}`;
+                                    state.drawBottomBar();
                                 }
                             } else if (char === 'l') {
                                 stream.write('\r\nActive connections:\r\n');
@@ -440,6 +446,7 @@ const sshServer = new Server({
                 stream.on('close', () => {
                     state.stream = null;
                     state.selectedId = null;
+                    state.settingsPanel = false;
                     console.log('[-] Admin shell session closed');
                 });
                 stream.on('error', () => { try { stream.destroy(); } catch {} });

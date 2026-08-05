@@ -89,6 +89,7 @@ const visibleLength = (str: string): number => {
 
 export class SSHConnection {
     selectedId: string | null = null;
+    settingsPanel: boolean = false;
     commandMode: boolean = true;
     commandInputMode: boolean = false;
     commandInputBuffer: string = '';
@@ -98,6 +99,57 @@ export class SSHConnection {
     rows?: number;
     cols?: number;
     constructor(public stream: any) { }
+
+    showSettingsPanel() {
+        this.selectedId = null;
+        this.settingsPanel = true;
+        this.commandMode = true;
+        this.commandInputMode = false;
+        this.commandInputBuffer = '';
+        this.statusMessage = '';
+        this.tmuxInterceptMode = false;
+        this.deleteConfirmMode = false;
+        this.renderSettingsPanel();
+        this.drawBottomBar();
+    }
+
+    renderSettingsPanel() {
+        if (!this.rows || !this.cols || !this.stream) return;
+
+        const contentRows = Math.max(1, this.rows - 1);
+        const panelWidth = Math.max(4, Math.min(72, this.cols - 2));
+        const innerWidth = panelWidth - 2;
+        const fit = (text: string) => text.slice(0, innerWidth).padEnd(innerWidth);
+        const center = (text: string) => {
+            if (text.length >= innerWidth) return text.slice(0, innerWidth);
+            const left = Math.floor((innerWidth - text.length) / 2);
+            return ' '.repeat(left) + text + ' '.repeat(innerWidth - text.length - left);
+        };
+        const border = `+${'-'.repeat(innerWidth)}+`;
+        const lines = [
+            border,
+            `|${center('Settings')}|`,
+            `|${fit('')}|`,
+            `|${fit(' Reserved for future settings.')}|`,
+            `|${fit(' No settings are available yet.')}|`,
+            `|${fit('')}|`,
+            `|${fit(' Keys')}|`,
+            `|${fit('   0     Open this settings panel')}|`,
+            `|${fit('   1-9   Switch to a connection panel')}|`,
+            `|${fit('   :     Open the command prompt')}|`,
+            border,
+        ];
+        const topRow = Math.max(1, Math.floor((contentRows - lines.length) / 2) + 1);
+        const leftCol = Math.max(1, Math.floor((this.cols - panelWidth) / 2) + 1);
+
+        this.stream.write('\x1b[2J');
+        this.stream.write(`\x1b[1;${contentRows}r`);
+        lines.forEach((line, index) => {
+            const row = topRow + index;
+            if (row <= contentRows) this.stream.write(`\x1b[${row};${leftCol}H${line}`);
+        });
+        this.stream.write('\x1b[H');
+    }
 
     drawBottomBar() {
         if (!this.rows || !this.cols || !this.stream) return;
@@ -113,6 +165,8 @@ export class SSHConnection {
             status = '[Tmux >_]';
         } else if (this.deleteConfirmMode) {
             status = '[Delete? x=confirm]';
+        } else if (this.settingsPanel) {
+            status = '[Settings]';
         } else if (this.commandMode) {
             status = '[Command Mode]';
         } else if (this.selectedId) {
@@ -129,8 +183,8 @@ export class SSHConnection {
             return;
         }
 
-        // Build tab string with bold for active, tmux-aware format
-        let tabContent = '';
+        // Panel 0 is reserved for settings; connection panels start at 1.
+        let tabContent = (this.settingsPanel ? '\x1b[1m' : '') + ' 0:Settings ' + (this.settingsPanel ? '\x1b[22m' : '');
         let index = 1;
         activeConnections.forEach((info, id) => {
             const isActive = id === this.selectedId;
