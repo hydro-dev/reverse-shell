@@ -65,6 +65,8 @@ const handleDirectTcpip = (
     console.log(`[tcpip] direct ${info.srcIP}:${info.srcPort} -> ${info.destIP}:${info.destPort} via ${connId}`);
     let channel: any;
     try { channel = accept(); } catch { return; }
+    // Guard the requestTargetSocket window so a channel-level reset can't crash the daemon.
+    channel.on('error', () => { try { channel.close(); } catch {} });
     requestTargetSocket(connId, info.destPort)
         .then((targetSocket) => {
             channel.pipe(targetSocket);
@@ -164,13 +166,13 @@ const sshServer = new Server({
                     switch (parts[0]) {
                         case 'fwd': {
                             if (!state.selectedId) {
-                                stream.write('Error: no connection selected\r\n');
+                                state.statusMessage = 'Error: no connection selected';
                                 break;
                             }
                             const fwdArgs = parts.slice(1);
                             const remotePort = parseInt(fwdArgs[0]);
                             if (isNaN(remotePort) || remotePort < 1 || remotePort > 65535) {
-                                stream.write('Usage: fwd <remotePort> [localPort]\r\n');
+                                state.statusMessage = 'Usage: fwd <remotePort> [localPort]';
                                 break;
                             }
                             const rawLocal = parseInt(fwdArgs[1]);
@@ -178,16 +180,16 @@ const sshServer = new Server({
                             const connId = state.selectedId;
                             if (isManual) {
                                 if (rawLocal < 1 || rawLocal > 65535) {
-                                    stream.write('Error: local port must be between 1 and 65535\r\n');
+                                    state.statusMessage = 'Error: local port must be between 1 and 65535';
                                     break;
                                 }
                                 registerTunnel(connId, remotePort, rawLocal)
                                     .then(() => {
-                                        stream.write(`[+] Tunnel: 0.0.0.0:${rawLocal} -> target:${remotePort}\r\n`);
+                                        state.statusMessage = `[+] Tunnel: 0.0.0.0:${rawLocal} -> target:${remotePort}`;
                                         state.drawBottomBar();
                                     })
                                     .catch((e: Error) => {
-                                        stream.write(`[-] Failed: ${e.message}\r\n`);
+                                        state.statusMessage = `[-] Failed: ${e.message}`;
                                         state.drawBottomBar();
                                     });
                             } else {
@@ -196,11 +198,11 @@ const sshServer = new Server({
                                         registerTunnel(connId, remotePort, localPort).then(() => localPort),
                                     )
                                     .then((localPort) => {
-                                        stream.write(`[+] Tunnel: 0.0.0.0:${localPort} -> target:${remotePort}\r\n`);
+                                        state.statusMessage = `[+] Tunnel: 0.0.0.0:${localPort} -> target:${remotePort}`;
                                         state.drawBottomBar();
                                     })
                                     .catch((e: Error) => {
-                                        stream.write(`[-] Failed: ${e.message}\r\n`);
+                                        state.statusMessage = `[-] Failed: ${e.message}`;
                                         state.drawBottomBar();
                                     });
                             }
@@ -208,16 +210,16 @@ const sshServer = new Server({
                         }
                         case 'unfwd': {
                             if (!state.selectedId) {
-                                stream.write('Error: no connection selected\r\n');
+                                state.statusMessage = 'Error: no connection selected';
                                 break;
                             }
                             const remotePort = parseInt(parts[1]);
                             if (isNaN(remotePort)) {
-                                stream.write('Usage: unfwd <remotePort>\r\n');
+                                state.statusMessage = 'Usage: unfwd <remotePort>';
                                 break;
                             }
                             unregisterTunnel(state.selectedId, remotePort);
-                            stream.write(`[-] Tunnel removed: target:${remotePort}\r\n`);
+                            state.statusMessage = `[-] Tunnel removed: target:${remotePort}`;
                             break;
                         }
                         case 'tunnels': {
@@ -232,39 +234,41 @@ const sshServer = new Server({
                         }
                         case 'alias': {
                             if (!state.selectedId) {
-                                stream.write('Error: no connection selected (press a number to select one first)\r\n');
+                                state.statusMessage = 'Error: no connection selected (press a number to select one first)';
                                 break;
                             }
                             const connInfo = activeConnections.get(state.selectedId);
                             if (!connInfo) {
-                                stream.write('Error: selected connection no longer exists\r\n');
+                                state.statusMessage = 'Error: selected connection no longer exists';
                                 break;
                             }
                             const aliasArg = parts.slice(1).join(' ').replace(/[\x00-\x1f\x7f]/g, '');
                             if (!aliasArg) {
                                 if (connInfo.alias) {
-                                    stream.write(`[-] Cleared alias "${connInfo.alias}" for ${state.selectedId}\r\n`);
+                                    state.statusMessage = `[-] Cleared alias "${connInfo.alias}" for ${state.selectedId}`;
                                     connInfo.alias = '';
                                     setAlias(connInfo.clientId, '');
                                 } else {
-                                    stream.write('Usage: alias <name>  (set an alias for the selected connection)\r\n');
+                                    state.statusMessage = 'Usage: alias <name>  (set an alias for the selected connection)';
                                 }
                             } else {
                                 connInfo.alias = aliasArg;
                                 setAlias(connInfo.clientId, aliasArg);
                                 const note = connInfo.clientId ? '' : ' (in-memory only)';
-                                stream.write(`[+] Alias set: ${state.selectedId} -> ${aliasArg}${note}\r\n`);
+                                state.statusMessage = `[+] Alias set: ${state.selectedId} -> ${aliasArg}${note}`;
                             }
                             break;
                         }
                         default:
-                            if (parts[0]) stream.write(`Unknown command: ${parts[0]}\r\n`);
+                            if (parts[0]) state.statusMessage = `Unknown command: ${parts[0]}`;
                     }
                     state.drawBottomBar();
                 };
 
                 stream.on('data', (data: Buffer) => {
                     const input = data.toString();
+                    // New input clears the previous one-shot status message.
+                    if (state.statusMessage) state.statusMessage = '';
                     if (data[0] === 2) { // Ctrl+B
                         if (state.tmuxInterceptMode) {
                             // ctrl-b inside tmux intercept → enter admin command mode
@@ -317,21 +321,19 @@ const sshServer = new Server({
                                 const cmd = state.commandInputBuffer;
                                 state.commandInputMode = false;
                                 state.commandInputBuffer = '';
-                                stream.write('\r\n');
                                 executeAdminCommand(cmd);
                             } else if (char === '\x7f' || char === '\x08') {
                                 if (state.commandInputBuffer.length > 0) {
                                     state.commandInputBuffer = state.commandInputBuffer.slice(0, -1);
-                                    stream.write('\x08 \x08');
+                                    state.drawBottomBar();
                                 }
                             } else if (char === '\x1b') {
                                 state.commandInputMode = false;
                                 state.commandInputBuffer = '';
-                                stream.write('\r\n');
                                 state.drawBottomBar();
                             } else {
                                 state.commandInputBuffer += char;
-                                stream.write(char);
+                                state.drawBottomBar();
                             }
                         }
                         return;
@@ -371,7 +373,7 @@ const sshServer = new Server({
                         else if (char === ':') {
                             state.commandInputMode = true;
                             state.commandInputBuffer = '';
-                            stream.write('\r\n:');
+                            state.drawBottomBar();
                         } else if (char === 'c') {
                             if (state.selectedId) {
                                 const conn = activeConnections.get(state.selectedId);
@@ -440,6 +442,7 @@ const sshServer = new Server({
                     state.selectedId = null;
                     console.log('[-] Admin shell session closed');
                 });
+                stream.on('error', () => { try { stream.destroy(); } catch {} });
             });
         });
     });

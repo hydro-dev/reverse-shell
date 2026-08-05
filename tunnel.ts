@@ -72,6 +72,10 @@ const tunnelServer = net.createServer((targetSocket) => {
     targetSocket.on('error', () => {});
 });
 
+tunnelServer.on('error', (err: NodeJS.ErrnoException) => {
+    console.error(`[!] Tunnel server error: ${err.message}`);
+});
+
 tunnelServer.listen(TUNNEL_SERVER_PORT, '0.0.0.0', () => {
     console.log(`[*] Tunnel server listening on port ${TUNNEL_SERVER_PORT}`);
 });
@@ -133,6 +137,9 @@ export function registerTunnel(
 
     return new Promise((resolve, reject) => {
         const localServer = net.createServer((localSocket) => {
+            // Guard the bridge-acquisition window: a reset here before bridge() attaches its
+            // own handler would otherwise crash the daemon.
+            localSocket.on('error', () => { try { localSocket.destroy(); } catch {} });
             console.log(`[tunnel] local connection on port ${localPort} for ${connectionId}:${remotePort}`);
             const tryBridge = (attempts: number) => {
                 const ts = popWaitingSocket(connectionId, remotePort);

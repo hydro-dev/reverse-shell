@@ -21,6 +21,7 @@ function getPublicIpFromWeb(): Promise<string> {
             let data = '';
             res.on('data', (chunk: Buffer) => { data += chunk; });
             res.on('end', () => resolve(data.trim()));
+            res.on('error', reject);
         });
         req.on('error', reject);
         req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
@@ -91,6 +92,7 @@ export class SSHConnection {
     commandMode: boolean = true;
     commandInputMode: boolean = false;
     commandInputBuffer: string = '';
+    statusMessage: string = '';
     tmuxInterceptMode: boolean = false;
     deleteConfirmMode: boolean = false;
     rows?: number;
@@ -99,6 +101,13 @@ export class SSHConnection {
 
     drawBottomBar() {
         if (!this.rows || !this.cols || !this.stream) return;
+
+        // Command line input takes over the bottom bar (vim-like): no echo into the content area.
+        if (this.commandInputMode) {
+            this.writeStatusBar(': ' + this.commandInputBuffer, '42');
+            return;
+        }
+
         let status: string;
         if (this.tmuxInterceptMode) {
             status = '[Tmux >_]';
@@ -112,6 +121,12 @@ export class SSHConnection {
             status = `[Connected: ${label}]`;
         } else {
             status = '[No Connection]';
+        }
+
+        // One-shot command result replaces the bottom bar so the main content stays clean.
+        if (this.statusMessage) {
+            this.writeStatusBar(this.statusMessage, '42');
+            return;
         }
 
         // Build tab string with bold for active, tmux-aware format
@@ -151,13 +166,29 @@ export class SSHConnection {
         // Full line: set color bg based on mode (41=red deleteConfirm, 42=green commandMode, 43=yellow tmuxIntercept, 44=blue passthrough)
         const bgColor = this.deleteConfirmMode ? '41' : (this.commandMode ? '42' : (this.tmuxInterceptMode ? '43' : '44'));
         const fullLine = `\x1b[${bgColor};37m` + tabContent + padding + status + '\x1b[0m';
+        this.writeRawStatusBar(fullLine);
+    }
 
-        // Since padding is visible spaces, and all in the same background color, it should fill
+    // Paint a full bottom-bar line (save/restore cursor, clear the line).
+    private writeRawStatusBar(fullLine: string) {
         this.stream.write('\x1b[s');
         this.stream.write(`\x1b[${this.rows};0H`);
         this.stream.write('\x1b[2K');
         this.stream.write(fullLine);
         this.stream.write('\x1b[u');
+    }
+
+    // Paint plain text on the bottom bar with a solid background, truncating to cols.
+    private writeStatusBar(text: string, bgColor: string) {
+        const max = this.cols!;
+        let line = text;
+        const visLen = visibleLength(line);
+        if (visLen > max) {
+            // Truncate approximately; for simplicity, slice string and adjust
+            line = line.slice(0, Math.floor(line.length * (max - 3) / visLen)) + '...';
+        }
+        const pad = ' '.repeat(Math.max(0, max - visibleLength(line)));
+        this.writeRawStatusBar(`\x1b[${bgColor};37m${line}${pad}\x1b[0m`);
     }
 }
 
