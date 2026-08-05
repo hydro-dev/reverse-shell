@@ -1,8 +1,9 @@
 import { timingSafeEqual } from 'crypto';
-import { Server, utils, ParsedKey } from 'ssh2';
+import { Server } from 'ssh2';
 import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
+import { AuthorizedKeysStore } from './authorizedKeys';
 import { activeConnections, activeSSHConnections, setAlias, SSHConnection, writeSocketSafe } from './state';
 import { activeTunnels, findAvailablePort, registerTunnel, requestTargetSocket, unregisterTunnel } from './tunnel';
 
@@ -20,9 +21,8 @@ if (!fs.existsSync(privateKeyPath)) {
     execSync(`ssh-keygen -t rsa -b 4096 -f ${privateKeyPath} -N ""`);
 }
 
-const authorizedKeys = fs.existsSync(authorizedKeysPath) ? fs.readFileSync(authorizedKeysPath, 'utf-8').split('\n').filter(i => i.trim()) : [];
-const allowedPubKeys = authorizedKeys.map(i => utils.parseKey(i + '\n')).filter(i => i && !(i instanceof Error)) as ParsedKey[];
-console.log(allowedPubKeys.length + ' keys loaded');
+const authorizedKeys = new AuthorizedKeysStore(authorizedKeysPath);
+authorizedKeys.startWatching();
 
 const eq = (a: Buffer, b: Buffer) => {
     if (a.length !== b.length) return false;
@@ -104,7 +104,7 @@ const sshServer = new Server({
             case 'password':
                 return ctx.reject();
             case 'publickey':
-                for (const allowedPubKey of allowedPubKeys) {
+                for (const allowedPubKey of authorizedKeys.current) {
                     if (ctx.key.algo == allowedPubKey.type
                         && eq(ctx.key.data, allowedPubKey.getPublicSSH())
                         && (!ctx.signature || allowedPubKey.verify(ctx.blob!, ctx.signature, ctx.hashAlgo))) {
