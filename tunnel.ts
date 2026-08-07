@@ -25,20 +25,22 @@ export const expectedSockets = new Set<string>();
 
 const tunnelServer = net.createServer((targetSocket) => {
     console.log(`[tunnel] target connected from ${targetSocket.remoteAddress}:${targetSocket.remotePort}`);
-    let headerBuf = '';
+    let headerBuf = Buffer.alloc(0);
 
     // Send READY signal so client knows it can send the TUNNEL header
     targetSocket.write('READY\n');
 
     const onData = (chunk: Buffer) => {
         console.log(`[tunnel] onData ${chunk.length} bytes, hex: ${chunk.toString('hex')}`);
-        headerBuf += chunk.toString();
-        const nlIdx = headerBuf.indexOf('\n');
-        console.log(`[tunnel] nlIdx=${nlIdx} headerBuf.length=${headerBuf.length}`);
+        headerBuf = Buffer.concat([headerBuf, chunk]);
+        const nlIdx = headerBuf.indexOf(0x0a);
+        console.log(`[tunnel] headerBuf.length=${headerBuf.length}`);
         if (nlIdx === -1) return;
 
         targetSocket.off('data', onData);
-        const line = headerBuf.slice(0, nlIdx).trim();
+        targetSocket.pause();
+        const line = headerBuf.subarray(0, nlIdx).toString().trim();
+        const remaining = headerBuf.subarray(nlIdx + 1);
         const parts = line.split(' ');
         console.log(`[tunnel] parsed: parts=${JSON.stringify(parts)} keys=${[...activeTunnels.keys()]}`);
 
@@ -56,6 +58,8 @@ const tunnelServer = net.createServer((targetSocket) => {
             targetSocket.destroy();
             return;
         }
+
+        if (remaining.length > 0) targetSocket.unshift(remaining);
 
         console.log(`[tunnel] target registered: ${connectionId}:${remotePort}`);
         waitingTargetSockets.push({ targetSocket, connectionId, remotePort });
