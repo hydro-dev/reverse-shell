@@ -6,6 +6,7 @@ import { networkInterfaces, homedir } from 'os';
 import { get } from 'https';
 import fs from 'fs';
 import path from 'path';
+import type { SharePermission } from './share';
 
 const PRIVATE_RE = [
     /^10\./,
@@ -108,8 +109,48 @@ export class SSHConnection {
     deleteConfirmMode: boolean = false;
     rows?: number;
     cols?: number;
+    isGuest: boolean = false;
+    guestConnectionId: string | null = null;
+    guestPermission: SharePermission | null = null;
+    guestTokenInput: string = '';
+    guestTokenError: string = '';
     private panelHitAreas: PanelHitArea[] = [];
     constructor(public stream: any) { }
+
+    renderGuestTokenPrompt() {
+        if (!this.stream) return;
+        const width = Math.max(20, Math.min(60, (this.cols ?? 80) - 2));
+        const innerWidth = width - 2;
+        const valueWidth = Math.max(1, innerWidth - ' Share token: '.length);
+        const token = '*'.repeat(Math.min(this.guestTokenInput.length, valueWidth));
+        const fit = (text: string) => text.slice(0, innerWidth).padEnd(innerWidth);
+        const border = `+${'-'.repeat(innerWidth)}+`;
+        this.stream.write('\x1b[2J\x1b[H\x1b[r');
+        this.stream.write(`${border}\r\n`);
+        this.stream.write(`|${fit(' Share token: ' + token)}|\r\n`);
+        this.stream.write(`${border}\r\n`);
+        if (this.guestTokenError) this.stream.write(`${this.guestTokenError}\r\n`);
+    }
+
+    renderSharedTerminal(info: ConnectionInfo) {
+        if (!this.stream || !this.rows) return;
+        const contentRows = Math.max(1, this.rows - 1);
+        const buffer = info.terminal.buffer.active;
+        this.stream.write('\x1b[2J\x1b[H');
+        this.stream.write(`\x1b[1;${contentRows}r`);
+        this.stream.write(info.serializeAddon.serialize());
+        this.stream.write(`\x1b[${buffer.cursorY + 1};${buffer.cursorX + 1}H`);
+        this.drawBottomBar();
+    }
+
+    resetGuestShare() {
+        if (!this.isGuest) return;
+        this.guestConnectionId = null;
+        this.guestPermission = null;
+        this.guestTokenInput = '';
+        this.guestTokenError = '';
+        this.renderGuestTokenPrompt();
+    }
 
     getPanelAtColumn(column: number): PanelTarget | null {
         return this.panelHitAreas.find((area) => (
@@ -172,6 +213,12 @@ export class SSHConnection {
     drawBottomBar() {
         if (!this.rows || !this.cols || !this.stream) return;
         this.panelHitAreas = [];
+
+        if (this.isGuest) {
+            if (!this.guestConnectionId || !this.guestPermission) return;
+            this.writeStatusBar(`Shared terminal: ${this.guestPermission === 'ro' ? 'read-only' : 'read-write'}`, '44');
+            return;
+        }
 
         // Command line input takes over the bottom bar (vim-like): no echo into the content area.
         if (this.commandInputMode) {
@@ -329,3 +376,9 @@ export class ConnectionInfo {
 
 export const activeConnections = new Map<string, ConnectionInfo>();
 export const activeSSHConnections = new Map<Connection, SSHConnection>();
+
+export const resetGuestSessionsForConnection = (connectionId: string) => {
+    activeSSHConnections.forEach((sshState) => {
+        if (sshState.guestConnectionId === connectionId) sshState.resetGuestShare();
+    });
+};

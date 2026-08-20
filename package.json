@@ -7,7 +7,8 @@
   },
   "license": "MIT",
   "scripts": {
-    "start": "node -r @hydrooj/register server.ts"
+    "start": "node -r @hydrooj/register server.ts",
+    "test:share": "node -r @hydrooj/register test/share.ts && node -r @hydrooj/register test/guest-share.ts"
   },
   "dependencies": {
     "@hydrooj/register": "^1.0.3",

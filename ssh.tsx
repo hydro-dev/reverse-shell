@@ -4,10 +4,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import { AuthorizedKeysStore } from './authorizedKeys';
-import { activeConnections, activeSSHConnections, setAlias, SSHConnection, writeSocketSafe } from './state';
+import { activeConnections, activeSSHConnections, resetGuestSessionsForConnection, setAlias, SSHConnection, writeSocketSafe } from './state';
+import { createShare, lookupShare, revokeSharesForConnection } from './share';
 import { activeTunnels, findAvailablePort, registerTunnel, requestTargetSocket, unregisterTunnel } from './tunnel';
 
-const SSH_PORT = 13336;
+const SSH_PORT = Number(process.env.SSH_PORT ?? 13336);
 
 const dotssh = path.join(homedir(), '.ssh');
 if (!fs.existsSync(dotssh)) fs.mkdirSync(dotssh);
@@ -88,7 +89,7 @@ const handleDirectTcpip = (
         });
 };
 
-const sshServer = new Server({
+export const sshServer = new Server({
     hostKeys: [fs.readFileSync(privateKeyPath)],
 }, (client) => {
     const clientInfo = `SSH client`;
@@ -98,6 +99,11 @@ const sshServer = new Server({
     activeSSHConnections.set(client, state);
 
     client.on('authentication', (ctx) => {
+        if (eq(Buffer.from(ctx.username), Buffer.from('guest'))) {
+            if (ctx.method !== 'none') return ctx.reject();
+            state.isGuest = true;
+            return ctx.accept();
+        }
         if (!eq(Buffer.from(ctx.username), Buffer.from('user')))
             return ctx.reject();
         switch (ctx.method) {
@@ -118,7 +124,10 @@ const sshServer = new Server({
     });
 
     client.on('ready', () => {
-        client.on('tcpip', (accept, reject, info) => handleDirectTcpip(accept, reject, info));
+        client.on('tcpip', (accept, reject, info) => {
+            if (state.isGuest) return reject();
+            handleDirectTcpip(accept, reject, info);
+        });
         client.on('session', (accept, reject) => {
             const session = accept();
 
@@ -134,6 +143,16 @@ const sshServer = new Server({
                 accept?.();
                 state.rows = info.rows;
                 state.cols = info.cols;
+                if (state.isGuest) {
+                    if (state.guestConnectionId) {
+                        const connInfo = activeConnections.get(state.guestConnectionId);
+                        if (connInfo) state.renderSharedTerminal(connInfo);
+                        else state.resetGuestShare();
+                    } else {
+                        state.renderGuestTokenPrompt();
+                    }
+                    return;
+                }
                 if (state.settingsPanel) {
                     state.renderSettingsPanel();
                 } else if (state.selectedId) {
@@ -154,6 +173,52 @@ const sshServer = new Server({
                 if (!state.rows) {
                     state.rows = 24;
                     state.cols = 80;
+                }
+                if (state.isGuest) {
+                    console.log('[*] Guest shell session started');
+                    state.renderGuestTokenPrompt();
+                    stream.on('data', (data: Buffer) => {
+                        if (state.guestConnectionId) {
+                            if (state.guestPermission === 'rw') {
+                                const conn = activeConnections.get(state.guestConnectionId);
+                                if (conn) writeSocketSafe(conn.socket, data);
+                                else state.resetGuestShare();
+                            }
+                            return;
+                        }
+                        for (const char of data.toString()) {
+                            if (char === '\r' || char === '\n') {
+                                const share = lookupShare(state.guestTokenInput);
+                                const conn = share && activeConnections.get(share.connectionId);
+                                state.guestTokenInput = '';
+                                if (!share || !conn) {
+                                    state.guestTokenError = 'Invalid share token';
+                                    state.renderGuestTokenPrompt();
+                                    continue;
+                                }
+                                state.guestTokenError = '';
+                                state.guestConnectionId = share.connectionId;
+                                state.guestPermission = share.permission;
+                                state.renderSharedTerminal(conn);
+                                return;
+                            } else if (char === '\x7f' || char === '\x08') {
+                                state.guestTokenInput = state.guestTokenInput.slice(0, -1);
+                                state.guestTokenError = '';
+                                state.renderGuestTokenPrompt();
+                            } else if (/^[A-Za-z0-9_-]$/.test(char) && state.guestTokenInput.length < 128) {
+                                state.guestTokenInput += char;
+                                state.guestTokenError = '';
+                                state.renderGuestTokenPrompt();
+                            }
+                        }
+                    });
+                    stream.on('close', () => {
+                        state.stream = null;
+                        state.guestConnectionId = null;
+                        console.log('[-] Guest shell session closed');
+                    });
+                    stream.on('error', () => { try { stream.destroy(); } catch {} });
+                    return;
                 }
                 console.log('[*] Admin shell session started');
 
@@ -237,6 +302,21 @@ const sshServer = new Server({
                                     stream.write(`  ${t.connectionId}:${t.remotePort} -> 127.0.0.1:${t.localPort}\r\n`);
                                 });
                             }
+                            break;
+                        }
+                        case 'share': {
+                            if (!state.selectedId) {
+                                state.statusMessage = 'Error: no connection selected';
+                                break;
+                            }
+                            const permission = parts[1];
+                            if (parts.length !== 2 || (permission !== 'ro' && permission !== 'rw')) {
+                                state.statusMessage = 'Usage: share <ro|rw>';
+                                break;
+                            }
+                            const token = createShare(state.selectedId, permission);
+                            stream.write(`\r\nShare token (${permission === 'ro' ? 'read-only' : 'read-write'}): ${token}\r\n`);
+                            state.statusMessage = 'Share token printed above';
                             break;
                         }
                         case 'alias': {
@@ -444,6 +524,8 @@ const sshServer = new Server({
                                     // Destroy the socket and remove from active connections
                                     try { connInfo.socket.removeAllListeners(); connInfo.socket.destroy(); } catch {}
                                     activeConnections.delete(connId);
+                                    revokeSharesForConnection(connId);
+                                    resetGuestSessionsForConnection(connId);
                                     // Also clean up any tunnels for this connection
                                     for (const [, tunnel] of activeTunnels) {
                                         if (tunnel.connectionId === connId) {
@@ -531,5 +613,7 @@ const sshServer = new Server({
 sshServer.listen(SSH_PORT, '0.0.0.0', () => {
     console.log(`[*] SSH management server listening on port ${SSH_PORT}`);
     console.log('[*] Waiting for admin connections...');
-    console.log(`[*] Public key for admin connection: ${fs.readFileSync(publicKeyPath, 'utf8')}`);
+    if (fs.existsSync(publicKeyPath)) {
+        console.log(`[*] Public key for admin connection: ${fs.readFileSync(publicKeyPath, 'utf8')}`);
+    }
 });

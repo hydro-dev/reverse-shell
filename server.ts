@@ -4,7 +4,8 @@ import './tunnel';
 import * as net from 'net';
 import fs from 'fs';
 import path from 'path';
-import { activeConnections, activeSSHConnections, aliasesByClientId, ConnectionInfo, serverIp, writeSocketSafe } from './state';
+import { activeConnections, activeSSHConnections, aliasesByClientId, ConnectionInfo, resetGuestSessionsForConnection, serverIp, writeSocketSafe } from './state';
+import { revokeSharesForConnection } from './share';
 
 // Safety net: a single socket hit by ECONNRESET (or any unprotected stream) must never
 // take the whole daemon down. Sockets below carry their own error listeners; this catches
@@ -96,6 +97,8 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
                 if (info.disconnected && activeConnections.get(connectionId) === info) {
                     console.log(`[-] Removing stale connection: ${connectionId}`);
                     activeConnections.delete(connectionId);
+                    revokeSharesForConnection(connectionId);
+                    resetGuestSessionsForConnection(connectionId);
                     activeSSHConnections.forEach((sshState) => {
                         if (sshState.selectedId === connectionId) {
                             sshState.selectedId = null;
@@ -146,9 +149,9 @@ function attachSocket(connectionId: string, info: ConnectionInfo, socket: net.So
         info.terminal.write(data);
         console.log(`[${connectionId}] ${data.toString('hex')}`);
         activeSSHConnections.forEach((sshConn) => {
-            if (sshConn.selectedId === connectionId && sshConn.stream) {
+            if ((sshConn.selectedId === connectionId || sshConn.guestConnectionId === connectionId) && sshConn.stream) {
                 sshConn.stream.write(data);
-                if (data.toString().includes('\x1b[2J')) {
+                if (sshConn.isGuest || data.toString().includes('\x1b[2J')) {
                     sshConn.drawBottomBar();
                 }
             }
@@ -184,6 +187,8 @@ reverseShellServer.on('connection', (socket) => {
         // Clean up on close for legacy connections (no reconnect)
         socket.on('close', () => {
             activeConnections.delete(connectionId);
+            revokeSharesForConnection(connectionId);
+            resetGuestSessionsForConnection(connectionId);
             activeSSHConnections.forEach((sshState) => {
                 if (sshState.selectedId === connectionId) {
                     sshState.selectedId = null;
@@ -239,6 +244,8 @@ reverseShellServer.on('connection', (socket) => {
                 console.log(`[*] Cleaning up legacy connection: ${connId}`);
                 destroySocketSafe(connInfo.socket);
                 activeConnections.delete(connId);
+                revokeSharesForConnection(connId);
+                resetGuestSessionsForConnection(connId);
                 // Reset any SSH sessions that were viewing this legacy connection
                 for (const [, sshState] of activeSSHConnections) {
                     if (sshState.selectedId !== connId) continue;
@@ -252,8 +259,10 @@ reverseShellServer.on('connection', (socket) => {
 
             const existing = activeConnections.get(clientId);
             if (existing) {
-                // Reconnect: reuse existing ConnectionInfo, swap socket
+                // A reconnecting client may claim an existing clientId, so shares must not follow it.
                 console.log(`[*] Reconnect: restoring session for ${clientId}`);
+                revokeSharesForConnection(clientId);
+                resetGuestSessionsForConnection(clientId);
                 destroySocketSafe(existing.socket);
                 if (hasTmux) existing.tmuxEnabled = true;
                 existing.disconnected = false;
