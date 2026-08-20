@@ -307,8 +307,8 @@ export class SSHConnection {
 
     // Paint a full bottom-bar line (save/restore cursor, clear the line).
     private writeRawStatusBar(fullLine: string) {
-        // Enable basic click tracking with SGR coordinates for terminals wider than 223 columns.
-        this.stream.write('\x1b[?1000h\x1b[?1006h');
+        // Enable tmux-compatible drag tracking with SGR coordinates.
+        this.stream.write('\x1b[?1002h\x1b[?1006h');
         this.stream.write('\x1b[s');
         this.stream.write(`\x1b[${this.rows};0H`);
         this.stream.write('\x1b[2K');

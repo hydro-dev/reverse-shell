@@ -223,7 +223,7 @@ export const sshServer = new Server({
                 console.log('[*] Admin shell session started');
 
                 const closeAdminShell = () => {
-                    try { stream.write('\x1b[?1000l\x1b[?1006l'); } catch {}
+                    try { stream.write('\x1b[?1002l\x1b[?1006l'); } catch {}
                     stream.end();
                 };
 
