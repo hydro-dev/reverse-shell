@@ -11,14 +11,14 @@
     "test:share": "node -r @hydrooj/register test/share.ts && node -r @hydrooj/register test/guest-share.ts"
   },
   "dependencies": {
-    "@hydrooj/register": "^1.0.3",
-    "@xterm/addon-serialize": "^0.13.0",
-    "@xterm/headless": "^5.5.0",
-    "ssh2": "^1.16.0",
+    "@hydrooj/register": "^1.0.4",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "ssh2": "^1.17.0",
     "xterm": "^5.3.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.18",
+    "@types/node": "^22.20.1",
     "@types/ssh2": "^1.15.5"
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
