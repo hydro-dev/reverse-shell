@@ -4,10 +4,10 @@ import { createShare, lookupShare, revokeSharesForConnection } from '../share';
 const readOnlyToken = createShare('connection-a', 'ro');
 const readWriteToken = createShare('connection-b', 'rw');
 
-assert.equal(readOnlyToken.length, 43);
-assert.equal(readWriteToken.length, 43);
-assert.match(readOnlyToken, /^[A-Za-z0-9_-]{43}$/);
-assert.match(readWriteToken, /^[A-Za-z0-9_-]{43}$/);
+assert.equal(readOnlyToken.length, 45);
+assert.equal(readWriteToken.length, 45);
+assert.match(readOnlyToken, /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz]{45}$/);
+assert.match(readWriteToken, /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz]{45}$/);
 assert.notEqual(readOnlyToken, readWriteToken);
 assert.deepEqual(lookupShare(readOnlyToken), { connectionId: 'connection-a', permission: 'ro' });
 assert.deepEqual(lookupShare(readWriteToken), { connectionId: 'connection-b', permission: 'rw' });
