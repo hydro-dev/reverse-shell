@@ -85,6 +85,8 @@ async function main() {
         const readOnly = await connectGuest(address.port);
         const prompt = await waitForOutput(readOnly.stream, 'Share token:');
         assert.ok(!prompt.includes('Command mode'));
+        readOnly.stream.write('\r');
+        await wait(50);
 
         const forwardError = await new Promise<Error | undefined>((resolve) => {
             readOnly.client.forwardOut('127.0.0.1', 10000, '127.0.0.1', 22, resolve);
@@ -113,7 +115,7 @@ async function main() {
         const readWriteToken = createShare('target', 'rw');
         const readWrite = await connectGuest(address.port);
         const readWriteReady = waitForOutput(readWrite.stream, 'Shared terminal: read-write');
-        readWrite.stream.write(`${readWriteToken}\r`);
+        readWrite.stream.write(`\x1b[200~${readWriteToken}\x1b[201~\r`);
         await readWriteReady;
         const payload = Buffer.from('\x1b[<0;1;1Mhello');
         readWrite.stream.write(payload);

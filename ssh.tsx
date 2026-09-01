@@ -186,8 +186,14 @@ export const sshServer = new Server({
                             }
                             return;
                         }
-                        for (const char of data.toString()) {
+                        const input = data.toString().replace(/\x1b\[20[01]~/g, '');
+                        for (const char of input) {
                             if (char === '\r' || char === '\n') {
+                                if (!state.guestTokenInput) {
+                                    state.guestTokenError = '';
+                                    state.renderGuestTokenPrompt();
+                                    continue;
+                                }
                                 const share = lookupShare(state.guestTokenInput);
                                 const conn = share && activeConnections.get(share.connectionId);
                                 state.guestTokenInput = '';
@@ -316,7 +322,8 @@ export const sshServer = new Server({
                             }
                             const token = createShare(state.selectedId, permission);
                             stream.write(`\r\nShare token (${permission === 'ro' ? 'read-only' : 'read-write'}): ${token}\r\n`);
-                            state.statusMessage = 'Share token printed above';
+                            setImmediate(() => stream.write('\x1b[?1000l\x1b[?1006l'));
+                            state.statusMessage = 'Share token printed above; mouse select enabled';
                             break;
                         }
                         case 'alias': {
