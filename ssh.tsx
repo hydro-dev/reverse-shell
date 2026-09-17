@@ -566,6 +566,16 @@ export const sshServer = new Server({
                             state.drawBottomBar();
                         } else if (char === '0') {
                             state.showSettingsPanel();
+                        } else if (char === 'n' || char === 'p') {
+                            // n/p cycle to the next/previous active connection (wraps)
+                            const conns = Array.from(activeConnections.keys());
+                            if (conns.length) {
+                                const cur = state.selectedId ? conns.indexOf(state.selectedId) : -1;
+                                const next = cur === -1
+                                    ? (char === 'n' ? 0 : conns.length - 1)
+                                    : (cur + (char === 'n' ? 1 : -1) + conns.length) % conns.length;
+                                showConnectionPanel(conns[next]);
+                            }
                         } else if (char === 'c') {
                             if (state.selectedId) {
                                 const conn = activeConnections.get(state.selectedId);
