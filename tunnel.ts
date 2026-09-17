@@ -33,6 +33,11 @@ const tunnelServer = net.createServer((targetSocket) => {
     const onData = (chunk: Buffer) => {
         console.log(`[tunnel] onData ${chunk.length} bytes, hex: ${chunk.toString('hex')}`);
         headerBuf = Buffer.concat([headerBuf, chunk]);
+        if (headerBuf.length > 1024 * 1024) {
+            console.log('[tunnel] header too large, dropping connection');
+            targetSocket.destroy();
+            return;
+        }
         const nlIdx = headerBuf.indexOf(0x0a);
         console.log(`[tunnel] headerBuf.length=${headerBuf.length}`);
         if (nlIdx === -1) return;
