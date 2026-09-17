@@ -553,6 +553,13 @@ export const sshServer = new Server({
                             return;
                         }
                         if (char === 'q' || char === 'd') closeAdminShell();
+                        else if (char === '\x1b') {
+                            // ESC exits command mode back to the selected connection
+                            if (state.selectedId && activeConnections.has(state.selectedId)) {
+                                state.commandMode = false;
+                            }
+                            state.drawBottomBar();
+                        }
                         else if (char === ':') {
                             state.commandInputMode = true;
                             state.commandInputBuffer = '';
